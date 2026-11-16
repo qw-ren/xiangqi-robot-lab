@@ -2,7 +2,7 @@
 
 团队项目负责人：[@qw-ren](https://github.com/qw-ren)。用于整理代码、方案、实验记录和团队任务。
 
-协作者：[@bonglekirley](https://github.com/bonglekirley)、[@yoyo051124](https://github.com/yoyo051124)。采用本地 VS Code 开发、Git 分支/PR 合作，树莓派仅部署和设备验证。具体步骤见 [本地开发与部署](docs/project/LOCAL_DEVELOPMENT.md)。
+协作者：[@bonglekirley](https://github.com/bonglekirley)、[@Shengcheng-Jin](https://github.com/Shengcheng-Jin)。采用本地 VS Code 开发、Git 分支/PR 合作，树莓派仅部署和设备验证。具体步骤见 [本地开发与部署](docs/project/LOCAL_DEVELOPMENT.md)。
 
 基于 [Maicarons/chch-robot（CH-RO）](https://github.com/Maicarons/chch-robot)，保留上游 GPL-3.0 许可证。当前代码基线来自官方归档 `b569198`；这是独立团队仓库，不是完整上游 Git 历史。来源说明见 [UPSTREAM.md](UPSTREAM.md)。
 
