@@ -5,13 +5,13 @@
 先提交当前改动，打包指定 HEAD：
 
 ```powershell
-.\tools\deploy\deploy.ps1 -PackageOnly
+python tools/deploy/deploy.py --package-only
 ```
 
 确认需要部署时：
 
 ```powershell
-.\tools\deploy\deploy.ps1 -HostName 'dofbot@<设备地址>' -IdentityFile '<本地SSH私钥路径>'
+python tools/deploy/deploy.py --host 'dofbot@<设备地址>' --identity '<本地SSH私钥路径>'
 ```
 
 将占位符换成自己的本机参数。脚本拒绝未提交的工作区，使用 `git archive HEAD` 只打包已跟踪的提交内容，排除 `.git`、本地依赖和运行产物。上传至 `/home/dofbot/xiangqi-robot-lab/releases/<完整提交SHA>/`，已有相同 release 时停止，不覆盖它。
