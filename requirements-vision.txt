@@ -1,0 +1,6 @@
+# CPU-only visual tools; matches the tested Python 3.8 ARM64 environment.
+# Use a separate environment; do not install over a working hardware Python.
+numpy==1.24.4
+onnxruntime==1.16.3
+pandas==1.5.3
+opencv-contrib-python-headless==4.8.1.78

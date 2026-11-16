@@ -1,0 +1,13 @@
+{
+  "test_only": true,
+  "dictionary": "DICT_4X4_50",
+  "required_ids": [
+    10,
+    11,
+    12,
+    13
+  ],
+  "geometry_confirmed": false,
+  "geometry_source": "TEST ONLY synthetic drawing: grid origin=(180,180)px, spacing=80px",
+  "marker_corners_board_xy": {}
+}

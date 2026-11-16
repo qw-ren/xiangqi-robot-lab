@@ -1,0 +1,12 @@
+{
+  "test_only": true,
+  "passed": true,
+  "cases": 4,
+  "rotated_marker_id": 11,
+  "max_board_corner_error_px": 0.09721908470845397,
+  "complete_status": "test_board_calibration_success",
+  "detection_only_status": "marker_to_board_geometry_missing_or_unconfirmed",
+  "missing_marker_status": "required_markers_missing",
+  "wrong_corner_order_status": "inconsistent_marker_geometry",
+  "field_calibration_performed": false
+}

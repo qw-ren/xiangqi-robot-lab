@@ -1,0 +1,280 @@
+{
+  "model_load_ms": 3619.1006760000164,
+  "image": "tests/beb8220b82ec467910d9846e771d82f8.jpg",
+  "providers": [
+    [
+      "CPUExecutionProvider"
+    ],
+    [
+      "CPUExecutionProvider"
+    ]
+  ],
+  "opencv": "4.8.1",
+  "intra_threads": 2,
+  "inter_threads": 1,
+  "timing_scope": "RGB input -> RTMPose -> perspective transform -> whole-board classifier; excludes file IO/RGB conversion/resizing/debug drawing",
+  "runs": [
+    {
+      "phase": "first",
+      "index": 0,
+      "ms": 1603.5681900011696,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.604s pose=0.135s classifier=1.468s",
+      "used_pose_cache": false,
+      "returned_layout": true
+    },
+    {
+      "phase": "warm_full",
+      "index": 0,
+      "ms": 1588.5076770009618,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.588s pose=0.127s classifier=1.461s",
+      "used_pose_cache": false,
+      "returned_layout": true
+    },
+    {
+      "phase": "warm_full",
+      "index": 1,
+      "ms": 1589.8249959991517,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.590s pose=0.128s classifier=1.461s",
+      "used_pose_cache": false,
+      "returned_layout": true
+    },
+    {
+      "phase": "warm_full",
+      "index": 2,
+      "ms": 1584.477958998832,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.584s pose=0.131s classifier=1.453s",
+      "used_pose_cache": false,
+      "returned_layout": true
+    },
+    {
+      "phase": "warm_full",
+      "index": 3,
+      "ms": 1591.5142570011085,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.591s pose=0.132s classifier=1.460s",
+      "used_pose_cache": false,
+      "returned_layout": true
+    },
+    {
+      "phase": "warm_full",
+      "index": 4,
+      "ms": 1576.4028379999218,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.576s pose=0.126s classifier=1.450s",
+      "used_pose_cache": false,
+      "returned_layout": true
+    },
+    {
+      "phase": "warm_cached",
+      "index": 0,
+      "ms": 1441.555231998791,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.442s pose=cached classifier=1.441s",
+      "used_pose_cache": true,
+      "returned_layout": true
+    },
+    {
+      "phase": "warm_cached",
+      "index": 1,
+      "ms": 1463.137974998972,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.463s pose=cached classifier=1.463s",
+      "used_pose_cache": true,
+      "returned_layout": true
+    },
+    {
+      "phase": "warm_cached",
+      "index": 2,
+      "ms": 1445.1914910005144,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.445s pose=cached classifier=1.445s",
+      "used_pose_cache": true,
+      "returned_layout": true
+    },
+    {
+      "phase": "warm_cached",
+      "index": 3,
+      "ms": 1456.4336359999288,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.456s pose=cached classifier=1.456s",
+      "used_pose_cache": true,
+      "returned_layout": true
+    },
+    {
+      "phase": "warm_cached",
+      "index": 4,
+      "ms": 1454.5404330001475,
+      "layout": "rnbakabnr\n.........\n.c.....c.\np.p.p.p.p\n.........\n.........\nP.P.P.P.P\n.C..C....\n.........\nRNBAKABNR",
+      "time_info": "inference: total=1.455s pose=cached classifier=1.454s",
+      "used_pose_cache": true,
+      "returned_layout": true
+    }
+  ],
+  "original_shape": [
+    1707,
+    1280,
+    3
+  ],
+  "input_shape": [
+    1280,
+    960,
+    3
+  ],
+  "first_scores": [
+    [
+      0.9325540661811829,
+      0.9282249212265015,
+      0.9359106421470642,
+      0.9339241981506348,
+      0.9227093458175659,
+      0.9344037771224976,
+      0.9305727481842041,
+      0.9346692562103271,
+      0.9300317168235779
+    ],
+    [
+      0.8031759262084961,
+      0.8102426528930664,
+      0.8071513772010803,
+      0.8108994364738464,
+      0.8034476637840271,
+      0.811744213104248,
+      0.8123911619186401,
+      0.7990468740463257,
+      0.806975245475769
+    ],
+    [
+      0.8067411780357361,
+      0.928566575050354,
+      0.8111132383346558,
+      0.8161982297897339,
+      0.8111873865127563,
+      0.8147128224372864,
+      0.8161176443099976,
+      0.9203462600708008,
+      0.8211413621902466
+    ],
+    [
+      0.9247461557388306,
+      0.8103345632553101,
+      0.9255199432373047,
+      0.8125148415565491,
+      0.924583375453949,
+      0.8181636929512024,
+      0.9301413297653198,
+      0.8083896636962891,
+      0.9222747683525085
+    ],
+    [
+      0.8063632249832153,
+      0.8126204013824463,
+      0.8084932565689087,
+      0.8110323548316956,
+      0.8121711611747742,
+      0.8126673698425293,
+      0.812288224697113,
+      0.8143115639686584,
+      0.8113847374916077
+    ],
+    [
+      0.8006027936935425,
+      0.8065394759178162,
+      0.8060038685798645,
+      0.8083516955375671,
+      0.808222234249115,
+      0.808366060256958,
+      0.8090368509292603,
+      0.8106297850608826,
+      0.8089907765388489
+    ],
+    [
+      0.9250408411026001,
+      0.81904536485672,
+      0.9284216165542603,
+      0.8108710646629333,
+      0.9271383881568909,
+      0.8198294639587402,
+      0.9240403175354004,
+      0.8155615925788879,
+      0.9250199198722839
+    ],
+    [
+      0.816191554069519,
+      0.9280898571014404,
+      0.8075242638587952,
+      0.8056985139846802,
+      0.6780803799629211,
+      0.8125147819519043,
+      0.8115870356559753,
+      0.8131603598594666,
+      0.8129012584686279
+    ],
+    [
+      0.8027997016906738,
+      0.8126434683799744,
+      0.8104370832443237,
+      0.814605176448822,
+      0.8133209943771362,
+      0.8150122165679932,
+      0.8084236979484558,
+      0.8129846453666687,
+      0.8137478232383728
+    ],
+    [
+      0.9395630955696106,
+      0.9311380982398987,
+      0.929730236530304,
+      0.9359774589538574,
+      0.9378937482833862,
+      0.9380689859390259,
+      0.9201160669326782,
+      0.9245482087135315,
+      0.927143394947052
+    ]
+  ],
+  "first_keypoints": [
+    [
+      136.25,
+      268.125
+    ],
+    [
+      808.125,
+      268.125
+    ],
+    [
+      142.5,
+      980.625
+    ],
+    [
+      833.125,
+      940.0
+    ]
+  ],
+  "first_pose_scores": [
+    0.24899202585220337,
+    0.25351443886756897,
+    0.2531212270259857,
+    0.27776071429252625
+  ],
+  "warm_full": {
+    "mean_ms": 1586.1455453999952,
+    "median_ms": 1588.5076770009618,
+    "min_ms": 1576.4028379999218,
+    "max_ms": 1591.5142570011085
+  },
+  "warm_cached": {
+    "mean_ms": 1452.1717533996707,
+    "median_ms": 1454.5404330001475,
+    "min_ms": 1441.555231998791,
+    "max_ms": 1463.137974998972
+  },
+  "layout_consistent": true,
+  "manual_reference": "tools/vision/sample_manual_reference.txt",
+  "wrong_cells": [],
+  "matching_cells": 90,
+  "occupied_reference_cells": 32
+}

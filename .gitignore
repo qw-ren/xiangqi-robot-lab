@@ -113,3 +113,12 @@ docs/public/paper/*.fls
 
 # WorkBuddy local tooling / project memory (not part of the shipped project)
 .workbuddy/
+
+# Team-local credentials, hardware settings, and generated test artifacts
+.ssh/
+.chch-ssh/
+id_ed25519*
+*.pem
+*.key
+artifacts/
+configs/local/
