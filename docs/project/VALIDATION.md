@@ -19,3 +19,7 @@ PYTHONPATH=<已有视觉依赖目录> python3 -m pytest tests/ -q
 树莓派 Python 3.8 环境在收集阶段出现 5 处错误：`list[str]` 类型标注不兼容、测试文件括号式上下文管理器语法不兼容，以及缺少 `flask_cors`。所以不能报告全套测试通过。
 
 本仓库 CI 用 Python 3.10，并安装视觉依赖、pytest、flask 和 flask-cors，以满足原测试的语法与依赖。CI 的实际结果以 GitHub Actions 为准，未运行完成前不写为通过。CPU 视觉核心工具在 Python 3.8 上已实跑，不等于整套应用支持 Python 3.8。
+
+首次远端 CI 安装成功，但 `ubuntu-latest` 新运行器在载入旧版 ONNX Runtime 1.16.3 时报告 `cannot enable executable stack`，导致测试收集失败。这是运行器与既有二进制依赖的兼容问题；CI 改为固定 `ubuntu-22.04`，同时复用 `requirements-dev.txt`。没有更改系统加载器限制或树莓派环境。
+
+本地部署包已实际生成，并核对其中不包含 `.git`、本机凭据目录和 `artifacts/`。本轮未执行新 release 的设备部署。
