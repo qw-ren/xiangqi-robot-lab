@@ -1,5 +1,7 @@
 # 团队协作
 
+成员：`qw-ren`、`bonglekirley`、`yoyo051124`。本地 VS Code 是开发环境，GitHub 管理分支和 PR；树莓派仅部署和设备验证，不在设备上直接开发。详见 `docs/project/LOCAL_DEVELOPMENT.md`。
+
 ## 开始一个任务
 
 先建 Issue，写清目标、当前证据、改动范围和完成标准。任务由实际认领者填写负责人；不在无人确认时分派成员。

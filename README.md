@@ -2,6 +2,8 @@
 
 团队项目负责人：[@qw-ren](https://github.com/qw-ren)。用于整理代码、方案、实验记录和团队任务。
 
+协作者：[@bonglekirley](https://github.com/bonglekirley)、[@yoyo051124](https://github.com/yoyo051124)。采用本地 VS Code 开发、Git 分支/PR 合作，树莓派仅部署和设备验证。具体步骤见 [本地开发与部署](docs/project/LOCAL_DEVELOPMENT.md)。
+
 基于 [Maicarons/chch-robot（CH-RO）](https://github.com/Maicarons/chch-robot)，保留上游 GPL-3.0 许可证。当前代码基线来自官方归档 `b569198`；这是独立团队仓库，不是完整上游 Git 历史。来源说明见 [UPSTREAM.md](UPSTREAM.md)。
 
 ## 当前进展
@@ -19,7 +21,7 @@
 | 视觉测试与复跑 | [tools/vision/README.md](tools/vision/README.md) |
 | 方案与接口 | [docs/project/PLAN.md](docs/project/PLAN.md) |
 | 任务分解与验收 | [docs/project/ROADMAP.md](docs/project/ROADMAP.md) |
-| 团队合作 | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 团队合作 | [CONTRIBUTING.md](CONTRIBUTING.md)、[本地开发与部署](docs/project/LOCAL_DEVELOPMENT.md) |
 | 实验记录 | [docs/experiments/2026-11-16-vision/README.md](docs/experiments/2026-11-16-vision/README.md) |
 | 原项目说明 | [docs/upstream/README_zh.md](docs/upstream/README_zh.md) |
 
@@ -50,4 +52,4 @@ robot/ firmware/ ai/     上游控制、固件和 AI 模块
 .github/                CI、Issue/PR 模板及代码负责人
 ```
 
-使用 Issue 记录任务、问题及验收结果，通过分支和 Pull Request 合并代码。成员 GitHub 用户名确认后再邀请协作者，不预设团队成员或分工。
+使用 Issue 记录任务、问题及验收结果，通过分支和 Pull Request 合并代码。成员各自认领任务，协作邀请需要本人接受。

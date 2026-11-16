@@ -1,0 +1,4 @@
+-r requirements-vision.txt
+pytest>=7.4,<9
+flask>=2.3,<4
+flask-cors>=4,<7
