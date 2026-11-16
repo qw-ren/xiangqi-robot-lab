@@ -1,0 +1,115 @@
+# Editors and OS files
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+.history/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+__pypackages__/
+*.egg-info/
+.eggs/
+*.egg
+build/
+dist/
+site/
+.pytest_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Node and VitePress
+node_modules/
+pnpm-lock.yaml
+yarn.lock
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/.vitepress/temp/
+docs/.vitepress/.temp/
+
+# Runtime logs and local state
+*.log
+*.err.log
+*.out.log
+chchess.log
+local_settings.py
+.env
+.env.*
+!.env.example
+
+# Downloaded engines, tools, and datasets
+Pikafish/
+Pikafish.zip
+NetAssist.exe
+robot/tools/NetAssist.exe
+robot/vendor/*.zip
+dataset/
+dsocr/
+
+# Generated camera/debug captures
+camera_debug/
+debug_board_*.jpg
+
+# Model binaries are large; keep tracked files explicit if needed
+*.onnx.tmp
+
+# Embedded build outputs
+**/Objects/
+**/Listings/
+**/DebugConfig/
+*.o
+*.d
+*.crf
+*.axf
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.lnp
+*.dep
+*.build_log.htm
+*.scvd
+
+# C/C++ and CMake outputs
+cmake-build-*/
+out/
+target/
+
+# LaTeX build artifacts (paper source under docs/public/paper; keep .tex/.pdf/.bib/figures)
+docs/public/paper/*.aux
+docs/public/paper/*.bbl
+docs/public/paper/*.bcf
+docs/public/paper/*.blg
+docs/public/paper/*.lof
+docs/public/paper/*.lot
+docs/public/paper/*.out
+docs/public/paper/*.run.xml
+docs/public/paper/*.toc
+docs/public/paper/*.synctex.gz
+docs/public/paper/*.fdb_latexmk
+docs/public/paper/*.fls
+
+# WorkBuddy local tooling / project memory (not part of the shipped project)
+.workbuddy/
