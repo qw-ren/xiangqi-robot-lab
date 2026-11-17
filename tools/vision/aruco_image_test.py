@@ -20,11 +20,9 @@ import numpy as np
 from core.keypoint_helper import extract_chessboard
 
 
-def inspect_image(image_path: Path, config: dict, out: Path) -> dict:
-    out.mkdir(parents=True, exist_ok=True)
-    image = cv2.imread(str(image_path))
-    if image is None:
-        raise ValueError('Image cannot be read: '+str(image_path))
+def inspect_frame(image: np.ndarray, config: dict) -> tuple:
+    """Shared in-memory geometry validation; returns metadata, debug and warp."""
+    warped = None
     aruco = cv2.aruco
     dictionary = aruco.getPredefinedDictionary(getattr(aruco, config['dictionary']))
     params = aruco.DetectorParameters()
@@ -32,7 +30,7 @@ def inspect_image(image_path: Path, config: dict, out: Path) -> dict:
     corners, ids, rejected = aruco.ArucoDetector(dictionary, params).detectMarkers(image)
     found = [] if ids is None else ids.flatten().tolist()
     expected = config['required_ids']
-    result = {'image': str(image_path), 'dictionary': config['dictionary'],
+    result = {'dictionary': config['dictionary'],
               'test_only': bool(config.get('test_only', True)), 'detected_ids': found,
               'missing_ids': sorted(set(expected)-set(found)), 'unexpected_ids': sorted(set(found)-set(expected)),
               'duplicate_ids': sorted({i for i in found if found.count(i)>1}),
@@ -82,7 +80,6 @@ def inspect_image(image_path: Path, config: dict, out: Path) -> dict:
                 reason = 'board_outside_image_or_degenerate'
             else:
                 warped, _, _ = extract_chessboard(image, board_corners)
-                cv2.imwrite(str(out/'board_warped.png'), warped)
                 for label, point in zip(result['board_corner_order'], board_corners):
                     xy = tuple(np.rint(point).astype(int))
                     cv2.circle(debug, xy, 7, (0, 0, 255), 2)
@@ -90,8 +87,20 @@ def inspect_image(image_path: Path, config: dict, out: Path) -> dict:
                 result['board_calibration_success'] = True
                 result['field_calibration_success'] = not result['test_only']
     result['status'] = reason or ('test_board_calibration_success' if result['test_only'] else 'board_calibration_success')
-    cv2.imwrite(str(out/'markers.png'), debug)
-    (out/'result.json').write_text(json.dumps(result, indent=2))
+    return result, debug, warped
+
+
+def inspect_image(image_path: Path, config: dict, out: Path) -> dict:
+    out.mkdir(parents=True, exist_ok=True)
+    image = cv2.imdecode(np.fromfile(image_path, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError('Image cannot be read: ' + str(image_path))
+    result, debug, warped = inspect_frame(image, config)
+    result['image'] = str(image_path)
+    for name, value in [('markers.png', debug), ('board_warped.png', warped)]:
+        if value is not None:
+            cv2.imencode('.png', value)[1].tofile(out / name)
+    (out / 'result.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     return result
 
 

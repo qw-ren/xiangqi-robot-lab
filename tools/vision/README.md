@@ -35,6 +35,33 @@ python tools/vision/aruco_image_test.py --image artifacts/aruco/synthetic_perspe
 
 只检测标记时可用 `TEST_ONLY_detection_only_config.json`；它不会因检测到四枚标记就报告棋盘标定成功。图像输出只进行共面透视矫正，不估计内参或畸变。
 
+## Windows 固定机位实时识别
+
+在仓库根目录运行，`$py` 指向已有的带 GUI OpenCV、ArUco 和 ONNX Runtime 的 Python。不要在这个环境安装上面的 headless 依赖。个人标定放在已忽略的 `configs/local/`，照片和输出放在已忽略的 `artifacts/`，也可传入仓库外的路径。
+
+新 Windows 环境（Python 3.12）使用 `python -m pip install -r tools/vision/requirements-windows.txt`；已有正常环境无需重装。该文件与根目录的 ARM64/headless 依赖二选一。
+
+```powershell
+$py = "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"
+$config = 'configs/local/board-local.json'
+& $py tools/vision/aruco_live.py --camera 0 --config $config --out artifacts/snapshots --allow-approximate-geometry
+# 离线回归：照片路径可指向 Camera Roll，不需要复制进仓库
+& $py tools/vision/aruco_live.py --image artifacts/photos/WIN_20261117_14_48_21_Pro.jpg --config $config --out artifacts/replay/1448 --allow-approximate-geometry
+& $py tools/vision/aruco_live.py --image artifacts/photos/WIN_20261117_14_52_27_Pro.jpg --config $config --out artifacts/replay/1452 --allow-approximate-geometry
+```
+
+现场临时配置是由 14:45 照片估计的 ID 0–3 映射（画面左上 3、右上 2、左下 1、右下 0），保持 `test_only=true`；它未确认几何，需要显式传 `--allow-approximate-geometry`，输出不会报告正式现场标定成功。测量确认后的正式配置使用 `geometry_confirmed=true, test_only=false`，去掉该参数。工具共用 `aruco_image_test.inspect_frame` 的几何校验，不调用 RTMPose。
+
+离线命令可追加 `--reference artifacts/reference.txt`：参考文件为从照片左上起的 10 行×9 列棋局，空位用 `.`，红棋用大写、黑棋用小写；额外输出 `comparison.json`，逐格列出不一致位置和匹配数。程序退出码表示读取/定位是否成功，匹配数应查看 comparison，已知错分不会使程序异常退出。
+
+启动定位成功后固定复用四角。`R` 下一帧重新定位，`S` 保存当前识别帧，`Q`/Esc 退出。移动相机、棋盘或标记后必须重新定位。关闭 Windows「相机」后试索引 1；打不开或是内置摄像头则试 0。命令行棋局仅在变化时输出。自动采集验证可追加 `--frames 30 --no-preview --save-every 10`，保存路径与 S 相同；这不替代 GUI 按键检查。
+
+每次保存创建独立时间目录，含原始 `frame.png`、实际送入分类器的 `warped.png`、`layout.txt`、1 起始行列的 `cells.csv` 和 `result.json`。识别保持原型的 960 像素宽缩放再矫正方式。JSON 记录帧序号、取帧后时间、像素 SHA256、四角及定位帧、配置 SHA256 和 10×9 分数；缓存四角来自定位帧，原图、矫正图和分类结果来自当前同一帧。分数为模型输出，不解释成校准概率。
+
+现场红炮排查：按照片左上起第 8 行第 5 列为目标，先保存现状；给两枚红炮临时记为 A/B（不遮字），只交换两炮位置，保持字面方向并保存；再逐枚放到目标格，分别按 0/90/180/270 度旋转，每次手离开后按 S，记录炮编号、位置、方向和预测。每种状态观察多帧并保存错误与正常样本。随炮编号变化提示字形影响，随位置变化提示成像或格点影响，随旋转变化提示朝向影响；尚不能据单张照片决定微调。
+
+2026-11-17 联调已完成照片回归、摄像头采集和 S/R/Q 消息验证；后续人工实验在两个位置复现局部遮挡引起的 `C→B`，也保留了无遮挡错帧。详见[现场验证与遮挡实验记录](../../docs/experiments/2026-11-17-vision/README.md)。遮挡拒识和棋局更新保护仍是下一步工作，当前入口输出原始分类，未进行微调。个人配置、照片及全部样本继续保存在 Git 忽略目录。
+
 ## 改动后验证
 
 ```bash

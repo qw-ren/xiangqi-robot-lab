@@ -1,0 +1,5 @@
+# Standalone Windows CPU preview, Python 3.12. Use a dedicated environment.
+# Install this GUI wheel instead of any other OpenCV wheel.
+numpy==1.26.4
+opencv-contrib-python==4.10.0.84
+onnxruntime==1.20.1
