@@ -122,3 +122,4 @@ id_ed25519*
 *.key
 artifacts/
 configs/local/
+data/

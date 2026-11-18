@@ -9,11 +9,22 @@
 - BoardRecognizer: 识别器主类
 """
 
-from .camera import CameraManager
-from .detector import ChessboardDetector
-from .mapper import BoardMapper
-from .stabilizer import StableBoardBuffer
-from .recognizer import BoardRecognizer
+from importlib import import_module
+
+_EXPORTS = {
+    "CameraManager": ".camera", "ChessboardDetector": ".detector",
+    "BoardMapper": ".mapper", "StableBoardBuffer": ".stabilizer",
+    "BoardRecognizer": ".recognizer",
+}
+
+
+def __getattr__(name):
+    """Allow JSON-only consumers to import vision without camera dependencies."""
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    value = getattr(import_module(_EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     'CameraManager',

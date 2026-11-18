@@ -13,6 +13,8 @@ from web_simulation.routes import camera, game, recognition, status
 
 def register_routes(app):
     """Attach every blueprint to the Flask application."""
+    from web_simulation.dofbot import bp as dofbot_bp  # 增加 DOFBOT 连接、示教和确认接口。
+    app.register_blueprint(dofbot_bp)  # 状态保护同时覆盖原网页入口。
     app.register_blueprint(status.bp)
     app.register_blueprint(camera.bp)
     app.register_blueprint(recognition.bp)

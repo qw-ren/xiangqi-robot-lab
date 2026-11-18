@@ -21,6 +21,9 @@ def get_status():
 
 @bp.route("/api/robot/status")
 def get_robot_status():
+    from web_simulation.dofbot import enabled, get_controller  # 新启动器报告实际后端，避免显示原作者 TCP 地址。
+    if enabled():  # 连接必须显式点击，状态查询不运动。
+        return jsonify(success=True, status='configured', **get_controller().status())  # 与 DOFBOT 控制区一致。
     should_probe = request.args.get("probe") in {"1", "true", "yes"}
     if not should_probe:
         return jsonify(
@@ -51,7 +54,7 @@ def get_robot_status():
 def get_cameras():
     """List the locally available cameras."""
     try:
-        cameras = list_available_cameras()
+        cameras = list_available_cameras(refresh=request.args.get('refresh') == '1')  # 显式刷新时重新探测，普通打开页面复用列表。
         return jsonify(
             {
                 "success": True,

@@ -132,6 +132,11 @@ def robot_physical_baseline_status(observed_board):
 
 
 def apply_ai_best_move(best_move):
+    from web_simulation.dofbot import enabled, apply_move, apply_virtual  # 新入口复用规则校验。
+    if enabled() and current_robot_mode() == 'simulation':  # 虚拟模式直接完成局面提交。
+        return apply_virtual(best_move)  # 不留下等待实体动作的占用标志。
+    if enabled() and current_robot_mode() == 'hardware':  # 不混用 STM32 和 DOFBOT 指令。
+        return apply_move(best_move)  # 动作未确认前不修改正式棋局。
     _app = __import__("web_simulation.app", fromlist=["app"])
     gs = _app.game_state
 
@@ -190,14 +195,22 @@ def apply_ai_best_move(best_move):
         logger.warning("Ignored duplicate AI command token: %s", command_token)
         return duplicate_result
 
+    from xq_utils.rules import checked_transition  # 用规则库复核虚拟模式的 AI 走法。
+    preview = checked_transition(gs["current_fen"], best_move) if mode == _app.ROBOT_MODE_SIMULATION else None  # 实体闭环留待专门改造。
     if not gs["move_history"] or gs["move_history"][-1] != best_move:
         gs["move_history"].append(best_move)
         gs["display_history"].append(robot_command_text)
         gs["turn_count"] += 1
-        web_domain.apply_uci_to_board_state(gs["board_state"], best_move)
+        if preview is not None:  # 虚拟模式使用规则层的完整结果。
+            gs["board_state"] = preview["board_state"]  # 同步移动棋子。
+        else:  # 实体模式保留原流程，尚未实现视觉确认提交。
+            web_domain.apply_uci_to_board_state(gs["board_state"], best_move)  # 不混入不完整的实体状态机。
         gs["last_ai_command_token"] = command_token
 
-    update_current_fen()
+    if preview is not None:  # 虚拟模式保留准确的轮次和计数。
+        gs["current_fen"] = preview["fen"]  # 提交规则层生成的局面。
+    else:  # 实体模式仍需后续独立改造。
+        update_current_fen()  # 保持原实体处理。
     gs["pending_ai_move"] = None
     gs["robot_moving"] = True
     gs["vision_pause_until"] = time.monotonic() + _app.ROBOT_MOVE_PAUSE_SECONDS

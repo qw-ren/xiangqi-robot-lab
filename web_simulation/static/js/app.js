@@ -2,12 +2,11 @@
 
 class ChessSimulation {
     constructor() {
-        this.apiBase = 'http://localhost:5000/api';
+        this.apiBase = '/api'; // 跟随当前网页地址，便于改端口和迁移到树莓派。
         this.currentState = null;
         this.moveHistory = [];
-        this.currentInputSource = 'camera'; // 当前输入源
-        this.selectedCameraIndex = 1;
-        this.selectedCameraIndex = 1;
+        this.currentInputSource = window.CHRO_DESKTOP_SIMULATION ? 'virtual' : 'camera'; // 当前输入源
+        this.selectedCameraIndex = 0; // 初始选择与本机启动器保持一致，扫描后使用实际设备。
         this.networkCameraUrl = '';
         this.localImageBase64 = null;
         this.boardState = {}; // 用于可视化棋盘的状态 {"col,row": "piece_char"}
@@ -42,7 +41,7 @@ class ChessSimulation {
         this.bindEvents();
         this.log('系统初始化...', 'info');
         await this.checkConnection();
-        await this.loadLocalCameras();
+        await this.loadLocalCameras(); // 页面打开时选用实际可读设备；没有设备则使用虚拟棋盘。
         this.updateStatus();
     }
 
@@ -121,7 +120,8 @@ class ChessSimulation {
         const select = document.getElementById('input-source');
 
         try {
-            const response = await fetch(`${this.apiBase}/cameras`);
+            const refresh = select.dataset.loaded === 'true' ? '?refresh=1' : ''; // 手动刷新重新探测，首次打开可复用后端缓存。
+            const response = await fetch(`${this.apiBase}/cameras${refresh}`);
             const data = await response.json();
             const cameras = data.success ? data.cameras : [];
             const selectedValue = select.dataset.loaded === 'true'
@@ -140,12 +140,10 @@ class ChessSimulation {
                 });
                 this.log(`检测到 ${cameras.length} 个本地摄像头`, 'info');
             } else {
-                const option = document.createElement('option');
-                option.value = `camera:${this.selectedCameraIndex}`;
-                option.textContent = `本地摄像头 ${this.selectedCameraIndex}`;
-                select.appendChild(option);
-                this.log('未检测到可用摄像头，保留默认摄像头 0', 'warning');
+                this.log('未检测到有效摄像头画面，请检查连接、占用情况或隐私开关；可继续使用虚拟棋盘。', 'warning');
             }
+
+            select.add(new Option('虚拟棋盘（不使用摄像头）', 'virtual')); // 所有模式均可手动切回虚拟棋盘。
 
             const networkOption = document.createElement('option');
             networkOption.value = 'network';
@@ -164,6 +162,7 @@ class ChessSimulation {
                 const localOptions = [...select.options].filter((option) => option.value.startsWith('camera:'));
                 if (usbOption) select.value = usbOption.value;
                 else if (localOptions.length > 0) select.value = localOptions[0].value;
+                else select.value = 'virtual';
             }
 
             select.dataset.loaded = 'true';
@@ -177,6 +176,7 @@ class ChessSimulation {
     changeInputSource() {
         const source = document.getElementById('input-source').value;
         const img = document.getElementById('camera-feed');
+        this.setCameraPreviewStatus(source === 'virtual' ? '当前为虚拟棋盘；选择摄像头输入源可查看实时画面。' : source === 'local' ? '本地图片模式' : '正在连接摄像头…');
         if (source.startsWith('camera:')) {
             this.currentInputSource = 'camera';
             this.selectedCameraIndex = parseInt(source.split(':')[1], 10);
@@ -190,7 +190,13 @@ class ChessSimulation {
         document.getElementById('local-image-input').style.display = 'none';
         
         // 显示对应的输入组
-        if (source === 'network') {
+        if (source === 'virtual') { // 无相机也能对弈。
+            this.stopLocalCameraFrames(); // 关闭图像轮询。
+            img.src = ''; // 清空预览。
+            this.stopDynamicRecognition(); // 人类走棋改用鼠标点击。
+            this.setRecognitionMode(false); // 关闭识别状态。
+            this.log('虚拟棋盘模式：点击模拟测试，然后选择红棋和落点。', 'info');
+        } else if (source === 'network') {
             document.getElementById('network-camera-input').style.display = 'flex';
             if (this.networkCameraUrl) {
                 this.startLocalCameraStream();
@@ -218,6 +224,11 @@ class ChessSimulation {
     }
 
     // 显示本地或网络摄像头实时画面
+    setCameraPreviewStatus(message) { // 本文件方法；message为预览区状态文字，不使用HTML拼接。
+        const status = document.getElementById('camera-preview-status');
+        if (status) status.textContent = message;
+    }
+
     startLocalCameraStream() {
         this.stopLocalCameraFrames();
         const img = document.getElementById('camera-feed');
@@ -284,10 +295,16 @@ class ChessSimulation {
                 ctx.drawImage(img, x, y, drawWidth, drawHeight);
             }
             this.cameraFrameBusy = false;
+            this.setCameraPreviewStatus(`实时画面：${this.currentInputSource === 'network' ? '网络摄像头' : `本地摄像头（索引 ${this.selectedCameraIndex}）`}`);
         };
         img.onerror = () => {
             this.cameraFrameBusy = false;
-            this.log(`${this.currentInputSource === 'network' ? '网络摄像头' : `本地摄像头 ${this.selectedCameraIndex}`} 实时画面加载失败`, 'error');
+            const message = '摄像头画面不可用，请检查设备是否被占用，或点击“扫描／刷新摄像头”重新选择。';
+            this.setCameraPreviewStatus(message);
+            if (Date.now() - this.lastCameraFrameErrorAt > 5000) { // 错误日志最多每五秒一次，避免遮盖其他调试信息。
+                this.log(message, 'error');
+                this.lastCameraFrameErrorAt = Date.now();
+            }
         };
         img.src = frameUrl;
     }
@@ -406,6 +423,10 @@ class ChessSimulation {
                 return;
             }
 
+            if (data.preview_only) {
+                this.showVisionObservation(data);
+                return;
+            }
             const recognizedPieceCount = data.recognized_piece_count ?? data.piece_count ?? 0;
             const eventKey = `${data.event}:${data.message}:${recognizedPieceCount}`;
             if (data.event !== 'unchanged' && eventKey !== this.lastDynamicEvent) {
@@ -705,6 +726,10 @@ class ChessSimulation {
             if (data.success) {
                 document.getElementById('fen-display').value = data.fen || '';
                 document.getElementById('piece-count').textContent = data.piece_count || 0;
+                if (data.preview_only) {
+                    this.showVisionObservation(data);
+                    return;
+                }
                 this.log(`识别成功: 检测到 ${data.piece_count} 个棋子`, 'info');
                 
                 // 更新可视化棋盘
@@ -720,6 +745,36 @@ class ChessSimulation {
         } catch (error) {
             this.log(`识别错误: ${error.message}`, 'error');
         }
+    }
+
+    showVisionObservation(data, remember = true) {
+        if (remember) {
+            this.latestVisionPreview = data;
+            this.visionPreviewAt = Date.now();
+            this.visionPreviewSource = this.currentInputSource;
+        }
+        const observation = data.observation;
+        const labels = {
+            unconfirmed_geometry: '使用临时标定', orientation_unknown: '尚未指定棋盘朝向',
+            localization_failed: '定位失败，请检查四枚标记', unknown_cells: '存在未知格',
+            low_scores: '存在低分格', warming_up: '正在累计连续帧', no_prediction: '暂无分类结果',
+            review_required: '仍需确认，连续稳定不代表分类准确'
+        };
+        const reasons = observation.reasons.length ? observation.reasons : ['review_required'];
+        const message = `ArUco · ${reasons.map(reason => labels[reason] || reason).join('；')} · 原始预测，未写入棋局`;
+        const panel = document.getElementById('vision-observation-status');
+        if (panel) panel.textContent = message;
+        if (message !== this.lastVisionMessage) {
+            this.log(message, 'warning');
+            this.lastVisionMessage = message;
+        }
+        if (this.isGameRunning) return;
+        const board = observation.status === 'rejected' ? {} : (data.observed_board_state || {});
+        this.boardState = board;
+        this.drawVisualBoard();
+        this.drawBoard(board);
+        document.getElementById('piece-count').textContent = Object.keys(board).length;
+        document.getElementById('fen-display').value = '';
     }
 
     // 开始游戏
@@ -1401,8 +1456,8 @@ class ChessSimulation {
         
         const canvas = event.target;
         const rect = canvas.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
+        const x = (event.clientX - rect.left) * canvas.width / rect.width; // 补偿画布 CSS 缩放。
+        const y = (event.clientY - rect.top) * canvas.height / rect.height; // 补偿画布 CSS 缩放。
         
         // 计算点击的格子
         const cellWidth = (canvas.width - 40) / 8;
@@ -1421,12 +1476,12 @@ class ChessSimulation {
         if (!this.selectedSquare) {
             // 第一次点击：选择棋子（只能选红方）
             const piece = this.boardState[posKey];
-            if (piece && piece === piece.toUpperCase()) { // 大写=红方
+            if (piece && (piece === piece.toUpperCase()) === (this.playerColor === 'red')) { // 按开局时选择的玩家颜色选棋。
                 this.selectedSquare = { col, row, key: posKey, piece };
                 this.log(`选中棋子: ${piece} (${col}, ${row})`, 'info');
                 this.drawVisualBoard();
             } else if (piece) {
-                this.log('只能选择红方棋子', 'warning');
+                this.log(`只能选择${this.colorName(this.playerColor)}棋子`, 'warning');
             }
         } else {
             // 第二次点击：移动棋子
@@ -1490,7 +1545,8 @@ class ChessSimulation {
                 this.selectedSquare = null;
                 
                 // 解析UCI走法并更新可视化棋盘（玩家走棋不需要机械臂）
-                this.updateBoardFromUCIMove(uciMove, false);  // 玩家走法
+                this.boardState = data.board_state; // 后端 cchess 结果是正式棋局。
+                this.drawVisualBoard(); // 使用后端返回的棋子位置重绘。
                 
                 this.lastAiBestMoveHandled = null;
                 this.lastAiBoardApplied = null;
@@ -1560,7 +1616,22 @@ class ChessSimulation {
             const data = await response.json();
             
             if (data.success) {
-                this.currentState = data.state;
+                this.currentState = data.state; // 保存后端正式状态。
+                if (data.state.is_game_running) { // 刷新页面后恢复正在进行的虚拟对局。
+                    this.isGameRunning = true;
+                    this.robotMode = data.state.robot_mode;
+                    this.boardState = data.state.board_state || {};
+                    this.moveHistory = data.state.display_history || [];
+                    this.aiColor = data.state.ai_color || 'black';
+                    this.playerColor = data.state.player_color || 'red';
+                    this.isPlayerTurn = this.currentTurnFromFen(data.state.current_fen) === this.playerColor;
+                    document.getElementById('fen-display').value = data.state.current_fen;
+                    document.getElementById('piece-count').textContent = Object.keys(this.boardState).length;
+                    this.updateMoveList();
+                    this.drawVisualBoard();
+                    this.updateGameStatus();
+                    if (data.state.ai_thinking) this.startAIStatusPolling();
+                }
             }
         } catch (error) {
             // 静默失败

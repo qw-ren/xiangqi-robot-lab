@@ -17,77 +17,7 @@ if DEPS:
 sys.path.insert(0, str(ROOT))
 import cv2
 import numpy as np
-from core.keypoint_helper import extract_chessboard
-
-
-def inspect_frame(image: np.ndarray, config: dict) -> tuple:
-    """Shared in-memory geometry validation; returns metadata, debug and warp."""
-    warped = None
-    aruco = cv2.aruco
-    dictionary = aruco.getPredefinedDictionary(getattr(aruco, config['dictionary']))
-    params = aruco.DetectorParameters()
-    params.cornerRefinementMethod = aruco.CORNER_REFINE_SUBPIX
-    corners, ids, rejected = aruco.ArucoDetector(dictionary, params).detectMarkers(image)
-    found = [] if ids is None else ids.flatten().tolist()
-    expected = config['required_ids']
-    result = {'dictionary': config['dictionary'],
-              'test_only': bool(config.get('test_only', True)), 'detected_ids': found,
-              'missing_ids': sorted(set(expected)-set(found)), 'unexpected_ids': sorted(set(found)-set(expected)),
-              'duplicate_ids': sorted({i for i in found if found.count(i)>1}),
-              'marker_detection_success': bool(found), 'all_required_markers_detected': set(expected).issubset(found),
-              'board_calibration_success': False, 'field_calibration_success': False,
-              'geometry_confirmed': bool(config.get('geometry_confirmed', False)),
-              'geometry_source': config.get('geometry_source', 'unspecified'),
-              'rejected_candidates': len(rejected),
-              'corner_order': 'marker-local TL,TR,BR,BL in decoded orientation',
-              'markers': [{'id': int(i), 'pixel_corners': c.reshape(4, 2).tolist()} for i, c in zip(found, corners)]}
-    debug = image.copy()
-    if found:
-        aruco.drawDetectedMarkers(debug, corners, ids)
-    geometry = config.get('marker_corners_board_xy', {})
-    result['missing_geometry_ids'] = [i for i in expected if str(i) not in geometry]
-    reason = None
-    if result['missing_ids']:
-        reason = 'required_markers_missing'
-    elif result['duplicate_ids']:
-        reason = 'duplicate_marker_ids'
-    elif result['missing_geometry_ids'] or not result['geometry_confirmed']:
-        reason = 'marker_to_board_geometry_missing_or_unconfirmed'
-    else:
-        by_id = {i: c.reshape(4, 2) for i, c in zip(found, corners)}
-        board_points = np.float32([pt for i in expected for pt in geometry[str(i)]])
-        pixel_points = np.float32([pt for i in expected for pt in by_id[i]])
-        if board_points.shape != (len(expected)*4, 2):
-            raise ValueError('Each marker requires four board_xy corners')
-        homography, mask = cv2.findHomography(board_points, pixel_points, cv2.RANSAC, 3.0)
-        if homography is None or not np.isfinite(homography).all():
-            reason = 'degenerate_geometry'
-        else:
-            projected = cv2.perspectiveTransform(board_points.reshape(-1, 1, 2), homography).reshape(-1, 2)
-            errors = np.linalg.norm(projected-pixel_points, axis=1)
-            # All configured marker corners must agree, including RANSAC outliers.
-            result['max_reprojection_error_px'] = float(errors.max())
-            board_corners = cv2.perspectiveTransform(np.float32([[[0, 0], [8, 0], [0, 9], [8, 9]]]), homography)[0]
-            result['board_corner_order'] = ['A0/TL', 'A8/TR', 'J0/BL', 'J8/BR']
-            result['board_pixel_corners'] = board_corners.tolist()
-            h, w = image.shape[:2]
-            inside = bool(np.all(board_corners[:, 0]>=0) and np.all(board_corners[:, 0]<w) and np.all(board_corners[:, 1]>=0) and np.all(board_corners[:, 1]<h))
-            polygon = board_corners[[0, 1, 3, 2]].astype(np.float32)
-            valid_shape = bool(cv2.isContourConvex(polygon) and abs(cv2.contourArea(polygon))>100)
-            if errors.max()>config.get('max_reprojection_error_px', 3.0):
-                reason = 'inconsistent_marker_geometry'
-            elif not inside or not valid_shape:
-                reason = 'board_outside_image_or_degenerate'
-            else:
-                warped, _, _ = extract_chessboard(image, board_corners)
-                for label, point in zip(result['board_corner_order'], board_corners):
-                    xy = tuple(np.rint(point).astype(int))
-                    cv2.circle(debug, xy, 7, (0, 0, 255), 2)
-                    cv2.putText(debug, label, xy, cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 0, 255), 1)
-                result['board_calibration_success'] = True
-                result['field_calibration_success'] = not result['test_only']
-    result['status'] = reason or ('test_board_calibration_success' if result['test_only'] else 'board_calibration_success')
-    return result, debug, warped
+from vision.aruco import inspect_frame
 
 
 def inspect_image(image_path: Path, config: dict, out: Path) -> dict:

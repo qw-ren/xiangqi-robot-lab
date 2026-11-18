@@ -17,9 +17,9 @@ os.environ.setdefault("CHRO_ONNX_INTRA_THREADS", "2")
 
 import cv2
 import numpy as np
-from aruco_image_test import inspect_frame
-from core.keypoint_helper import extract_chessboard
+from vision.aruco import inspect_frame, classify_board
 from core.runonnx.full_classifier import FULL_CLASSIFIER_ONNX
+from vision.observation import ObservationStream, write_latest
 
 
 def main() -> None:
@@ -34,9 +34,23 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=0, help="Stop after N frames; 0 is unlimited")
     parser.add_argument("--no-preview", action="store_true", help="Disable GUI for capture smoke tests")
     parser.add_argument("--save-every", type=int, default=0, help="Save each Nth recognized frame; 0 disables")
+    parser.add_argument("--latest-json", type=Path, help="Atomically publish every observation for Web integration")
+    parser.add_argument("--board-orientation", choices=("unknown", "black-top", "red-top"), default="unknown",
+                        help="Which home side is at the image top; must be explicitly confirmed")
+    parser.add_argument("--stable-frames", type=int, default=3)
+    parser.add_argument("--min-score", type=float, default=0.8)
     args = parser.parse_args()
     if args.frames < 0 or args.save_every < 0:
         parser.error("frame counts must be nonnegative")
+    try:
+        observations = ObservationStream(args.board_orientation, args.stable_frames, args.min_score)
+    except ValueError as error:
+        parser.error(str(error))
+    if args.latest_json:
+        starting = observations.observe(frame_id=0, captured_at=datetime.now().astimezone().isoformat(),
+                                        calibration={})
+        starting["reasons"].append("source_starting")
+        write_latest(args.latest_json, starting)
 
     config_bytes = args.config.read_bytes()
     config = json.loads(config_bytes.decode("utf-8-sig"))
@@ -71,6 +85,7 @@ def main() -> None:
     recognized_frames = 0
     last_status = None
     calibration = None
+    captured_at = datetime.now().astimezone().isoformat()
     try:
         while True:
             if capture is None:
@@ -83,9 +98,9 @@ def main() -> None:
                 parser.exit(1, "Could not read the image or a camera frame.\n")
 
             frame_id += 1
-            captured_at = datetime.now().isoformat()
+            captured_at = datetime.now().astimezone().isoformat()
             status = "S save | R recalibrate | Q quit"
-            if corners is None:
+            if corners is None or args.latest_json:
                 calibration, _, _ = inspect_frame(frame, config)
                 status = calibration["status"]
                 if status != last_status:
@@ -96,19 +111,25 @@ def main() -> None:
                     calibration["approximate_geometry_override"] = args.allow_approximate_geometry
                     calibration["frame_id"] = frame_id
                     print(json.dumps(calibration), flush=True)
+                else:
+                    corners = None
             preview = cv2.resize(frame, (960, round(frame.shape[0] * 960 / frame.shape[1])),
                                  interpolation=cv2.INTER_AREA)
             warped = None
+            layout = scores = None
             if corners is not None:
                 scaled = corners * np.float32([preview.shape[1]/frame.shape[1], preview.shape[0]/frame.shape[0]])
-                warped, _, _ = extract_chessboard(preview, scaled)
-                _, _, scores, layout = model.pred(warped, is_rgb=False)
+                warped, scores, layout = classify_board(frame, corners, model)
                 recognized_frames += 1
                 if layout != previous:
                     print(layout, flush=True)
                     previous = layout
                 cv2.polylines(preview, [np.rint(scaled[[0, 1, 3, 2]]).astype(np.int32)], True, (0, 255, 0), 2)
-            elif capture is None:
+            observation = observations.observe(frame_id=frame_id, captured_at=captured_at,
+                                               calibration=calibration or {}, layout=layout, scores=scores)
+            if args.latest_json:
+                write_latest(args.latest_json, observation)
+            if corners is None and capture is None:
                 parser.exit(1, status + "\n")
 
             if capture is None:
@@ -146,6 +167,7 @@ def main() -> None:
                                 "numpy": np.__version__, "providers": model.session.get_providers()},
                     "layout": layout, "scores": np.asarray(scores).tolist(),
                     "board_pixel_corners": corners.tolist(),
+                    "observation": observation,
                 }, indent=2), encoding="utf-8")
                 (folder / "layout.txt").write_text(layout + "\n", encoding="utf-8")
                 with (folder / "cells.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -166,6 +188,11 @@ def main() -> None:
                 print(f"Saved {folder}", flush=True)
             if key == ord("r"):
                 corners = previous = None
+                observations = ObservationStream(args.board_orientation, args.stable_frames, args.min_score)
+                if args.latest_json:
+                    invalidated = observations.observe(frame_id=frame_id, captured_at=captured_at, calibration={})
+                    invalidated["reasons"].append("recalibration_requested")
+                    write_latest(args.latest_json, invalidated)
                 last_status = None
                 if warped is not None and not args.no_preview:
                     # Clear the old board so a failed relocation cannot look current.
@@ -173,9 +200,16 @@ def main() -> None:
             if capture is None or key in (ord("q"), 27) or (args.frames and frame_id >= args.frames):
                 break
     finally:
-        if capture is not None:
-            capture.release()
-            cv2.destroyAllWindows()
+        try:
+            if args.latest_json:
+                stopped = ObservationStream(args.board_orientation, args.stable_frames, args.min_score).observe(
+                    frame_id=frame_id, captured_at=captured_at, calibration={})
+                stopped["reasons"].append("source_stopped")
+                write_latest(args.latest_json, stopped)
+        finally:
+            if capture is not None:
+                capture.release()
+                cv2.destroyAllWindows()
     print(f"Processed {frame_id} frames; recognized {recognized_frames}", flush=True)
     if not recognized_frames:
         parser.exit(2, "No frames passed board localization.\n")

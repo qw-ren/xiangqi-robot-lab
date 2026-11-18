@@ -62,6 +62,23 @@ $config = 'configs/local/board-local.json'
 
 2026-11-17 联调已完成照片回归、摄像头采集和 S/R/Q 消息验证；后续人工实验在两个位置复现局部遮挡引起的 `C→B`，也保留了无遮挡错帧。详见[现场验证与遮挡实验记录](../../docs/experiments/2026-11-17-vision/README.md)。遮挡拒识和棋局更新保护仍是下一步工作，当前入口输出原始分类，未进行微调。个人配置、照片及全部样本继续保存在 Git 忽略目录。
 
+## 与 Web 对接的观测输出
+
+Web 已直接使用共用的 `vision/aruco.py`，启动见 [Web 联调说明](../../web_simulation/README.md)。不需要为 Web 另开本工具占用相机。
+`vision/observation.py` 为观测协议的实现；原 `tools.vision.observation` 保留兼容导入。
+下面的文件发布方式用于独立采样或其他消费者。
+
+在原实时命令追加以下参数（确认画面上方确为黑方底线后才使用 `black-top`）：
+
+```powershell
+& $py tools/vision/aruco_live.py --camera 0 --config $config --out artifacts/snapshots --allow-approximate-geometry --board-orientation black-top --latest-json artifacts/vision/latest.json
+```
+
+每帧发布布局、90 格类别/分数、Web 的 `"col,row"` 字典、质量状态与时间戳。发布模式每帧校验定位；程序退出时文件标记失效，离线样本的观测仍保存在 `result.json.observation`。
+不指定方向时字典为 `null`。当前临时配置会标记 `unconfirmed_geometry`，连续稳定也不能自动确认棋局。
+`--stable-frames 3 --min-score 0.8` 为可调的基础检查参数，未验证为准确率保证；尚无遮挡检测或自动接受逻辑。
+供 Web 同学阅读的坐标、字段、读取示例及后续控制边界见[视觉接口说明](../../docs/project/VISION_INTERFACE.md)。
+
 ## 改动后验证
 
 ```bash

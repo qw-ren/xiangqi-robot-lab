@@ -1,55 +1,49 @@
 # 中国象棋机器人 · 电子工艺实习
 
-团队项目负责人：[@qw-ren](https://github.com/qw-ren)。用于整理代码、方案、实验记录和团队任务。
+团队使用同一份源码：本地 VS Code 开发、Git 分支 / PR 协作，树莓派仅部署与验证。
+视觉开发先推送 `vision`，经 PR 合入 `main`。不要把整个仓库复制到以成员或分支命名的子文件夹。
 
-协作者：[@bonglekirley](https://github.com/bonglekirley)、[@Shengcheng-Jin](https://github.com/Shengcheng-Jin)。采用本地 VS Code 开发、Git 分支/PR 合作，树莓派仅部署和设备验证。具体步骤见 [本地开发与部署](docs/project/LOCAL_DEVELOPMENT.md)。
-
-基于 [Maicarons/chch-robot（CH-RO）](https://github.com/Maicarons/chch-robot)，保留上游 GPL-3.0 许可证。当前代码基线来自官方归档 `b569198`；这是独立团队仓库，不是完整上游 Git 历史。来源说明见 [UPSTREAM.md](UPSTREAM.md)。
-
-## 当前进展
-
-- 已在树莓派 ARM64、Python 3.8.10 上跑通 CPU ONNX 四角检测、透视矫正和整盘分类。
-- 完整样图人工核对 90/90 交点一致；预热后完整推理均值 1.586 s，角点缓存均值 1.452 s。仅代表这一张样图。
-- USB 摄像头已能采集；现场棋盘缺边时原识别流程仍输出棋局，后续需增加拒识验证。
-- 独立 ArUco 图片入口和合成测试已通过，尚未进行现场标定。测试配置不能直接当作现场几何关系。
-- 当前团队验证范围为视觉。原仓库包含机械臂、固件和 AI 模块，本轮工具不调用这些入口。
+基于 [CH-RO](https://github.com/Maicarons/chch-robot)，保留 GPL-3.0，来源见 [UPSTREAM.md](UPSTREAM.md)。
 
 ## 从这里开始
 
-| 内容 | 入口 |
-|---|---|
-| 视觉测试与复跑 | [tools/vision/README.md](tools/vision/README.md) |
-| 方案与接口 | [docs/project/PLAN.md](docs/project/PLAN.md) |
-| 任务分解与验收 | [docs/project/ROADMAP.md](docs/project/ROADMAP.md) |
-| 团队合作 | [CONTRIBUTING.md](CONTRIBUTING.md)、[本地开发与部署](docs/project/LOCAL_DEVELOPMENT.md) |
-| 实验记录 | [docs/experiments/2026-11-16-vision/README.md](docs/experiments/2026-11-16-vision/README.md) |
-| 原项目说明 | [docs/upstream/README_zh.md](docs/upstream/README_zh.md) |
+| 任务 | 入口 |
+| --- | --- |
+| Web 使用 ArUco 预览 | [web_simulation/README.md](web_simulation/README.md) |
+| 独立视觉工具 | [tools/vision/README.md](tools/vision/README.md) |
+| 视觉 / Web 接口 | [docs/project/VISION_INTERFACE.md](docs/project/VISION_INTERFACE.md) |
+| 目录与迁移清单 | [docs/project/STRUCTURE.md](docs/project/STRUCTURE.md) |
+| Git 协作与部署 | [docs/project/LOCAL_DEVELOPMENT.md](docs/project/LOCAL_DEVELOPMENT.md) |
+| 本次整合验证 | [docs/experiments/2026-11-18-web-integration/README.md](docs/experiments/2026-11-18-web-integration/README.md) |
 
-## 视觉环境
+## 当前状态
 
-建议独立环境，避免覆盖树莓派已有包。已有可用环境可直接复用。
+Web 和独立工具共用 ArUco 几何校验、透视矫正和整盘 ONNX 分类；Web 默认不加载 RTMPose。
+原 RTMPose 可显式选择。现场照片回归为 90/90、89/90，不能代表所有实际场景。
+个人标定仍是 `test_only` 临时几何，尚需实测确认。局部遮挡可导致高分炮 / 相混淆。
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-vision.txt
-python tools/vision/image_benchmark.py --image tests/beb8220b82ec467910d9846e771d82f8.jpg --ground-truth tools/vision/sample_manual_reference.txt --out artifacts/sample --repeats 5
-python tools/vision/aruco_image_test.py --self-test --out artifacts/aruco
-```
-
-上述命令不会启动机械臂、电磁铁或 AI 引擎。摄像头采集另见工具说明。
+ArUco 输出供 Web 预览，附未知格、低分和定位质量；当前不自动确认有效棋局或触发控制。
+队友的虚拟对弈、策略服务和 DOFBOT 代码已整合保留，实际引擎 / 硬件部署另行验证。
 
 ## 目录
 
 ```text
-vision/ core/ model/      原有视觉实现和 ONNX 模型
-tools/vision/            独立图片、计时、摄像头及 ArUco 工具
-configs/aruco/           明确标记 TEST_ONLY 的合成测试配置
-docs/project/            方案、里程碑和验收约定
-docs/experiments/        可以共享的实验摘要和样图证据
-tests/                  原有测试与样图
-robot/ firmware/ ai/     上游控制、固件和 AI 模块
-.github/                CI、Issue/PR 模板及代码负责人
+run_local.py             统一 Web 启动入口
+vision/                  视觉业务：ArUco、观测、相机、原识别器
+core/ model/             底层 ONNX / 几何算法和单份模型
+web_simulation/          Flask、网页和 Web 与后端的衔接
+xiangqi_strategy/        队友的独立策略 / 串口服务（独立棋局）
+ai/ engine_assets/       引擎适配、公共权重及许可证
+robot/ firmware/         控制适配与固件
+xq_utils/                棋盘、FEN、坐标、规则校验
+tools/vision/            独立视觉命令
+tools/web/               Web 运行辅助工具
+tools/deploy/            打包、环境检查和部署辅助
+configs/                 共享配置示例；local/ 为忽略的个人配置
+tests/ docs/             自动测试、方案、接口及实验记录
+artifacts/ data/          忽略的本机样本、运行状态和日志
 ```
 
-使用 Issue 记录任务、问题及验收结果，通过分支和 Pull Request 合并代码。成员各自认领任务，协作邀请需要本人接受。
+Windows 视觉与 Web 环境安装 `tools/vision/requirements-windows.txt`；离线 CI 使用 `requirements-dev.txt`。
+OpenCV 只安装一种带 ArUco 的 wheel，不要混装 GUI / headless / 非 contrib 版本。
+本轮未执行机械臂动作或部署树莓派。

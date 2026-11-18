@@ -1,9 +1,19 @@
 """
 配置文件 - 线下棋盘人机博弈中国象棋项目
 """
+import os  # 标准库：区分 Windows 和 Linux 的引擎文件名。
+from pathlib import Path  # 标准库：以配置文件位置确定项目目录，避免依赖启动目录。
+
+# Web defaults to ArUco; missing configuration is reported, never a pose fallback.
+VISION_BACKEND = os.getenv("CHRO_VISION_BACKEND", "aruco")
+ARUCO_CONFIG_PATH = os.getenv("CHRO_ARUCO_CONFIG", str(Path(__file__).resolve().parent / "configs/local/board-local.json"))
+ARUCO_BOARD_ORIENTATION = os.getenv("CHRO_BOARD_ORIENTATION", "unknown")
+ARUCO_ALLOW_APPROXIMATE = os.getenv("CHRO_ARUCO_ALLOW_APPROXIMATE", "0") == "1"
+VISION_STABLE_FRAMES = 3
+VISION_MIN_SCORE = 0.8
 
 # ============= 摄像头配置 =============
-CAMERA_INDEX = 1              # 摄像头索引（1 为外接 USB 摄像头）
+CAMERA_INDEX = 0              # 摄像头索引（1 为外接 USB 摄像头）
 CAMERA_WIDTH = 640            # USB preview/recognition default width
 CAMERA_HEIGHT = 480           # USB preview/recognition default height
 CAMERA_FPS = 30               # 帧率保持不变
@@ -40,9 +50,10 @@ BLACK_LOWER = (0, 0, 0)       # 黑色下限
 BLACK_UPPER = (180, 255, 60)  # 黑色上限
 
 # ============= AI 引擎配置 =============
-ENGINE_PATH = "./Pikafish/pikafish-avx2.exe"  # Pikafish 引擎路径
-ENGINE_DEPTH = 15                    # 搜索深度
-THINK_TIME = 5000                    # 思考时间（毫秒）
+ENGINE_PATH = str(Path(__file__).resolve().parent / "Pikafish" / ("pikafish.exe" if os.name == "nt" else "pikafish"))  # Windows 用 exe；树莓派 Linux 用本地 ARM 可执行文件。
+ENGINE_NNUE_PATH = None  # None 使用引擎目录的默认权重；启动入口可指定独立权重的绝对路径。
+ENGINE_DEPTH = 8                    # 搜索深度
+THINK_TIME = 1000                    # 思考时间（毫秒）
 USE_HASH_TABLE = True                # 使用哈希表
 HASH_SIZE_MB = 128                   # 哈希表大小（MB）
 
@@ -106,9 +117,11 @@ BOARD_TOP_LEFT_Z = 0
 BOARD_ROTATION_ANGLE = 0
 
 # ============= 网络配置（如果使用网络摄像头） =============
-USE_IP_CAMERA = True          # 修改为 True
+USE_IP_CAMERA = False          # 修改为 True
 IP_CAMERA_URL = "http://192.168.0.101:8080/?action=stream"  # 修改为您香橙派的实际 IP 和 stream 参数
 
 
 # ============= 备用配置 =============
 FEN_START_POSITION = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
+
+ENGINE_THREADS = 2  # 本机联调的引擎线程数量。

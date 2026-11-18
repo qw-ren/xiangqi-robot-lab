@@ -1,103 +1,50 @@
-# Web仿真环境使用说明
+# Web 与 ArUco 联调
 
-## 功能概述
+从仓库根目录启动，当前只有这一份 Web 实现。旧的 `strategy_Jin/chch-robot` 已整合到根目录。
 
-Web仿真环境集成了项目的核心功能模块：
-- **视觉识别** (`vision.BoardRecognizer`) - 棋盘检测和棋子识别
-- **AI引擎** (`ai.AIEngine`) - Pikafish中国象棋AI
-- **机械臂控制** (`robot.RobotController`) - 模拟机械臂执行走法
+## Windows 最短启动
 
-## 启动方式
+使用已有可用 Python；新环境安装 `python -m pip install -r tools/vision/requirements-windows.txt`。
+将个人 ArUco 配置放到 `configs/local/board-local.json`，或在参数中传入实际路径。该文件不提交 Git。
 
-```bash
-cd G:\GitHub\chch-robot\web_simulation
-python app.py
+```powershell
+python run_local.py --vision-only --camera --camera-index 0 --aruco-config configs/local/board-local.json --board-orientation black-top --allow-approximate-geometry
 ```
 
-访问 http://localhost:5000
+打开 `http://127.0.0.1:5000/`。`black-top` 仅在确认图像上方为黑方底线后使用；反向用 `red-top`。
+`--allow-approximate-geometry` 只用于 `test_only=true` 的个人临时配置，正式测量后去掉。
+`--vision-only` 不要求 AI 引擎，并阻止开局、AI 和控制动作接口。
+若只测试图片，可不加 `--camera`，在网页选择“本地图片”、上传带标记的照片并点击识别。
 
-## 使用流程
+相机识别由 Web 进程独占，先退出独立 `aruco_live.py` 和 Windows 相机程序。
+选择 USB 摄像头后开启动态识别；查看“画面输入”下的状态提示与观测棋盘。
+若相机不在索引 0，可调整 `--camera-index` 或在网页重新选择。
 
-### 1. 标准对局（从头开始）
+## 结果含义
 
-1. 打开网页
-2. 点击"开始新对局"
-3. 玩家执红先行，点击棋子选择起始位置，再点击目标位置
-4. 点击"获取AI走法"让AI思考
-5. AI走法会通过模拟机械臂执行
+ArUco 原始观测与正式棋局分开：开局前可显示观测棋盘，对局中保持正式棋盘，质量状态持续提示。
+`provisional` 表示临时标定、方向未定或帧数不足；`rejected` 表示定位 / 分类基础检查失败；
+`review_required` 仍需确认。连续稳定和高分不能证明准确，目前不自动写入棋局或触发走子。
 
-### 2. 残局对局（从图片识别）
+正式虚拟对弈仍使用原游戏 / 策略功能。不能将本次预览接入描述成实体视觉闭环已完成。
+需要完整引擎功能时去掉 `--vision-only` 并传入 `--engine` / `--nnue`；默认控制后端为 mock。
+需要复测旧定位时显式使用 `--vision-backend rtmpose`，不会在 ArUco 失败后自动回退。
 
-1. 点击"选择图片文件"上传残局图片
-2. 点击"识别棋盘"进行识别
-3. 查看识别结果和FEN码
-4. 点击"开始新对局"（系统会自动使用识别的布局）
-5. 开始对弈
+## HTTP 接口
 
-### 3. 摄像头实时识别
+| 接口 | 用途 |
+| --- | --- |
+| `POST /api/vision/observation` | 上传图像或采集当前相机帧，返回 ArUco 观测预览 |
+| `POST /api/recognize` | 保留原按钮地址；ArUco 模式返回相同预览包 |
+| `POST /api/recognize/dynamic` | ArUco 模式逐帧预览；原定位模式仍走原动态逻辑 |
+| `GET /api/status` | 正式游戏状态，区别于原始视觉观测 |
 
-1. 确保摄像头已连接
-2. 选择"网络摄像头"模式
-3. 点击"捕获图像"
-4. 点击"识别棋盘"
+请求里的 `image` 为原图的 base64（不带 data-URL 前缀）；不传时从选择的相机取帧。
+响应的 `observation.board_state` / `observed_board_state` 是离散预测，`board_state` 是正式游戏状态；
+`preview_only=true` 时不把预测当成已确认棋局。完整字段和坐标见 [视觉接口](../docs/project/VISION_INTERFACE.md)。
 
-## 技术架构
+## 代码位置
 
-### 后端 (Flask)
-
-`web_simulation/` 是一个按职责拆分的 Flask 包（组合根 + 辅助模块 + 路由蓝图）：
-
-- `app.py` - 组合根：持有共享的 `game_state` 与模块级全局对象，注册下列蓝图
-- `domain.py` - 纯函数（棋盘/FEN/回合计算，含 `board_state_to_fen()`）
-- `services.py` - 摄像头与机械臂 TCP 客户端工厂
-- `robot_cmd.py` - 五值指令封装与发送
-- `game_logic.py` - 有状态的走子/动态基线同步
-- `startup.py` - 命令行参数覆盖
-- `routes/status.py` - 状态与控制器探测
-- `routes/camera.py` - 摄像头与 MJPEG 视频流
-- `routes/recognition.py` - 棋盘识别 / AI 走法 / 动态跟踪
-- `routes/game.py` - 开局与重置
-
-应用启动后调用项目核心模块：`vision.BoardRecognizer`、`ai.AIEngine`、`robot.RobotController`。
-
-### 前端
-
-- `templates/index.html` - 主页面
-- `static/js/app.js` - 前端逻辑
-- `static/css/style.css` - 样式
-
-### 关键API
-
-| 接口 | 方法 | 功能 |
-|------|------|------|
-| `/api/recognize` | POST | 识别棋盘状态 |
-| `/api/game/start` | POST | 开始新游戏 |
-| `/api/player_move` | POST | 处理玩家走法 |
-| `/api/ai_move` | POST | 获取AI走法 |
-| `/api/simulate_robot` | POST | 模拟机械臂移动 |
-
-## FEN码生成
-
-残局识别后，系统会：
-1. 将识别的`board_state`转换为标准FEN格式
-2. 使用 `web_simulation.domain.board_state_to_fen()` 生成FEN
-3. 将FEN传递给AI引擎作为初始局面
-
-## 注意事项
-
-1. **必须先点击"开始新对局"** 才能开始走棋
-2. 游戏中禁用"识别棋盘"按钮，防止误操作
-3. AI操控玩家棋子时判定为AI失败
-4. UCI坐标系统使用方案1（行号反转）
-
-## 调试信息
-
-前端日志会显示：
-- UCI走法解析过程
-- 棋盘状态变化
-- AI思考和机械臂执行状态
-
-后端日志会显示：
-- AI引擎通信详情
-- FEN更新情况
-- 走法历史同步状态
+`app.py` 持有共享服务；`services.py` 管理识别器与相机；`routes/recognition.py` 处理识别响应；
+`vision/aruco.py` 为唯一 ArUco 核心；`vision/observation.py` 生成质量及离散坐标；
+`dofbot.py` 保留队友的后端状态机，`robot/dofbot_adapter.py` 保留设备适配。

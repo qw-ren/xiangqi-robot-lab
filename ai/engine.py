@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Optional, List
 import config
+from ai.local_engine_io import TimedLineReader, watch_stderr  # 让 Windows 管道读取真正可超时。
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +60,24 @@ class AIEngine:
                 creationflags=creationflags
             )
             
+            self.process.stdout = TimedLineReader(self.process.stdout)  # 单独线程持续读取 stdout。
+            watch_stderr(self.process.stderr, logger)  # 持续消费错误输出，避免管道阻塞。
             self._send_command("uci")
             
             if self._wait_for_response("uciok", timeout=10.0):
-                # 设置为中国象棋变体
-                self._send_command("setoption name UCI_Variant value xiangqi")
-                self._send_command(f"setoption name Skill Level value {config.ENGINE_DEPTH}")
+                self._send_command(f"setoption name Threads value {getattr(config, 'ENGINE_THREADS', 2)}")  # Pikafish 已经是象棋引擎。
                 
                 if config.USE_HASH_TABLE:
                     self._send_command(f"setoption name Hash value {config.HASH_SIZE_MB}")
+
+                if getattr(config, 'ENGINE_NNUE_PATH', None):  # config.py 中定义；启动器可设置独立权重路径，None 保持引擎默认值。
+                    self._send_command(f"setoption name EvalFile value {config.ENGINE_NNUE_PATH}")  # 本类 _send_command(command)：通过 UCI 管道把匹配权重的路径交给 Pikafish。
                 
-                self._send_command("ucinewgame")
+                self._send_command("ucinewgame")  # 清理上一局的搜索状态。
+                self._send_command("isready")  # 检查初始化是否完成。
+                if not self._wait_for_response("readyok", timeout=15.0):  # 排队读取不会无限阻塞。
+                    self.stop()  # 初始化超时后释放子进程。
+                    return False  # 不把失败的进程交给网页。
                 self.is_ready = True
                 logger.info("引擎就绪（中国象棋模式）")
                 return True
@@ -101,7 +109,7 @@ class AIEngine:
         time_ms = think_time or config.THINK_TIME
         
         self.set_position()
-        self._send_command(f"go depth {depth}")
+        self._send_command(f"go depth {depth} movetime {int(time_ms)}")  # 深度和时间任一达到即结束。
         
         logger.info(f"AI思考中(深度{depth})...")
         

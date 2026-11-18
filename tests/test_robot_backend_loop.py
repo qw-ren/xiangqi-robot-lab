@@ -587,9 +587,12 @@ class RobotBackendLoopTests(unittest.TestCase):
         self.assertFalse(web_app.is_duplicate_player_move("a0a1"))
 
     def test_apply_ai_best_move_in_simulation_mode_never_sends_to_stm32(self):
+        from xq_utils.rules import checked_transition
+        after_red = checked_transition(web_app.config.FEN_START_POSITION, "a0a1")
         web_app.game_state.update(
             robot_mode="simulation",
-            board_state={"0,9": "R"},
+            board_state=after_red["board_state"],
+            current_fen=after_red["fen"],
             move_history=["a0a1"],
             display_history=["red a0a1"],
             turn_count=1,

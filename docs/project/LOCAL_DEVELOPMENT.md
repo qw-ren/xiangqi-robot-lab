@@ -30,6 +30,10 @@ code .
 
 原始实验数据保留在本地 `artifacts/` 或设备上，只整理必要、可共享的结果入库。
 
+视觉同学继续使用 `vision` 分支；`main` 更新后先拉取，再切回 `vision` 执行 `git merge main`。
+所有成员在同一功能目录中改代码，不把完整项目再复制进以自己名字命名的子目录。
+具体步骤与本轮迁移见 [STRUCTURE.md](STRUCTURE.md)。Windows 视觉预览需 GUI 环境，使用 `tools/vision/requirements-windows.txt`，不要与 headless OpenCV 混装。
+
 ## 树莓派仅用于部署
 
 树莓派上的源码是部署产物，不作为开发工作副本。需要修复时回到本地修改并提交，重新打包部署；避免出现仅存在于设备上的改动。

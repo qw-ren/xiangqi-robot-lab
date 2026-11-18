@@ -9,6 +9,7 @@ from typing import Dict, Optional, Tuple
 
 import cv2
 import numpy as np
+import config
 
 from .camera import CameraManager
 from .detector import ChessboardDetector
@@ -41,6 +42,10 @@ class BoardRecognizer:
         width: int = None,
         height: int = None,
         fps: int = None,
+        vision_backend: str = None,
+        aruco_config_path: str = None,
+        board_orientation: str = None,
+        allow_approximate_geometry: bool = None,
     ):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if pose_model_path is None:
@@ -55,10 +60,22 @@ class BoardRecognizer:
             height=height or CAMERA_HEIGHT,
             fps=fps or CAMERA_FPS,
         )
-        self.detector = ChessboardDetector(
-            pose_model_path=pose_model_path,
-            classifier_model_path=classifier_model_path,
-        )
+        self.vision_backend = vision_backend or config.VISION_BACKEND
+        self.last_observation = None
+        if self.vision_backend == "aruco":
+            from .aruco import ArucoRecognizer
+            self.aruco = ArucoRecognizer(
+                aruco_config_path or config.ARUCO_CONFIG_PATH, classifier_model_path,
+                orientation=board_orientation or config.ARUCO_BOARD_ORIENTATION,
+                allow_approximate=(config.ARUCO_ALLOW_APPROXIMATE if allow_approximate_geometry is None
+                                   else allow_approximate_geometry),
+                stable_frames=config.VISION_STABLE_FRAMES, min_score=config.VISION_MIN_SCORE)
+            self.detector = None
+        elif self.vision_backend == "rtmpose":
+            self.detector = ChessboardDetector(pose_model_path=pose_model_path,
+                                               classifier_model_path=classifier_model_path)
+        else:
+            raise ValueError("vision_backend must be aruco or rtmpose")
         self.stabilizer = StableBoardBuffer(maxlen=STABLE_WINDOW, ratio=STABLE_RATIO)
         self.dynamic_tracker = DynamicBoardTracker(
             buffer_window=1,
@@ -93,6 +110,9 @@ class BoardRecognizer:
 
     def reset_dynamic_tracking(self):
         self.dynamic_tracker.reset()
+        if self.vision_backend == "aruco":
+            self.aruco.reset()
+            self.last_observation = None
         if hasattr(self.detector, "reset_board_cache"):
             self.detector.reset_board_cache()
 
@@ -103,10 +123,19 @@ class BoardRecognizer:
         return self.camera_manager.capture_frame()
 
     def calibrate_board(self) -> bool:
+        if self.vision_backend == "aruco":
+            observation = self.recognize_observation()
+            return bool(observation["calibration"].get("field_calibration_success"))
         logger.info("Board calibration placeholder completed")
         return True
 
     def _detect_board_state(self, image: np.ndarray = None, save_debug: bool = False):
+        if self.vision_backend == "aruco":
+            observation = self.recognize_observation(image)
+            board = observation["board_state"]
+            state = ({tuple(map(int, key.split(","))): piece for key, piece in board.items()}
+                     if board is not None and observation["status"] != "rejected" else None)
+            return state, observation["layout"]
         if image is None:
             image = self.camera_manager.capture_frame()
         if image is None:
@@ -150,7 +179,20 @@ class BoardRecognizer:
         logger.info(time_info)
         return self.detector.parse_layout_string(layout_str), layout_str
 
+    def recognize_observation(self, image: np.ndarray = None) -> dict:
+        """ArUco preview with explicit quality; never commits a game state."""
+        if self.vision_backend != "aruco":
+            raise ValueError("observation API requires aruco backend")
+        if image is None:
+            image = self.camera_manager.capture_frame()
+        self.last_observation = self.aruco.observe(image)
+        return self.last_observation
+
     def recognize_dynamic_frame(self, image: np.ndarray = None):
+        if self.vision_backend == "aruco":
+            observation = self.recognize_observation(image)
+            return {"event": "vision_preview", "stable": False, "board_state": {}, "move": None,
+                    "observation": observation, "message": "ArUco 原始观测，尚未确认有效棋局"}
         raw_state, _ = self._detect_board_state(image=image, save_debug=False)
         if raw_state is None:
             return {
@@ -163,6 +205,10 @@ class BoardRecognizer:
         return self.dynamic_tracker.update(raw_state)
 
     def recognize_board(self, image: np.ndarray = None) -> Optional[Dict[Tuple[int, int], str]]:
+        if self.vision_backend == "aruco":
+            # Callers consuming accepted boards must not receive raw predictions.
+            self.recognize_observation(image)
+            return None
         if image is None:
             image = self.camera_manager.capture_frame()
         if image is None:
@@ -208,6 +254,15 @@ class BoardRecognizer:
         if image is None:
             image = self.camera_manager.last_frame
         if image is None:
+            return
+
+        if self.vision_backend == "aruco":
+            from .aruco import inspect_frame
+            _, debug, warped = inspect_frame(image, self.aruco.config)
+            cv2.imshow("ArUco localization", debug)
+            if warped is not None:
+                cv2.imshow("ArUco board", warped)
+            cv2.waitKey(1)
             return
 
         try:
