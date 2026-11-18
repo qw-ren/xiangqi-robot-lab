@@ -6,6 +6,8 @@
 
 ## 路径与接口
 
+视觉观测的 Python / JSON 接口、Web 离散坐标及后续控制坐标边界见 [VISION_INTERFACE.md](VISION_INTERFACE.md)。视觉代码先在 `vision` 分支开发、验证并推送。
+
 1. **图像输入**：离线样图或 V4L2 USB 节点。设备号随平台确认，不照搬 Windows 编号。
 2. **RTMPose**：复用 `core.chessboard_detector.ChessboardDetector`。`force_pose=True` 强制重做角点，默认路径可缓存。
 3. **ArUco 图片工具**：输出 ID、像素角点、缺失项；只有几何配置已确认、标记齐全且误差与入镜检查通过时才报告棋盘标定成功。
