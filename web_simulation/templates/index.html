@@ -41,33 +41,30 @@
                         </select>
                     </div>
                     <div class="control-buttons">
-                        <button id="btn-start-hardware-game" class="btn btn-primary btn-large">开始 DOFBOT 对局</button>
+                        <button id="btn-start-hardware-game" class="btn btn-primary btn-large">开始串口对局</button>
                         <button id="btn-start-simulation-game" class="btn btn-secondary btn-large">模拟测试（无下位机）</button>
                         <button id="btn-reset-game" class="btn btn-warning btn-large">重置游戏</button>
                     </div>
                 </section>
 
                 <section class="panel-section">
-                    <h2>DOFBOT 连接与动作</h2>
-                    <p id="dofbot-status" role="status">正在查询机械臂后端…</p>
+                    <h2>走棋串口与离线预演</h2>
+                    <p id="dofbot-status" role="status">正在查询走棋输出状态…</p>
+                    <div class="field-stack"><label for="serial-port">走棋串口（留空使用启动配置或模拟器）</label><input id="serial-port" placeholder="COM3 或 /dev/ttyUSB0"></div>
+                    <div class="field-stack"><label for="serial-baud">波特率（8N1）</label><input id="serial-baud" type="number" value="115200" min="1"></div>
                     <div class="control-buttons">
-                        <button id="btn-dofbot-connect" class="btn btn-secondary">连接 DOFBOT（不运动）</button>
-                        <button id="btn-dofbot-angles" class="btn btn-secondary">读取六轴角度</button>
-                        <button id="btn-dofbot-park" class="btn btn-warning">回停靠点（会运动）</button>
-                        <button id="btn-dofbot-stop" class="btn btn-danger">软件停止／结束对局</button>
+                        <button id="btn-dofbot-connect" class="btn btn-secondary">连接串口／模拟器</button>
+                        <button id="btn-dofbot-stop" class="btn btn-danger">停止后续输出／结束对局</button>
                         <button id="btn-dofbot-clear" class="btn btn-secondary">检查后解除故障</button>
                         <button id="btn-slots-clear" class="btn btn-secondary">确认吃子槽位已清空</button>
                     </div>
-                    <p class="help-text">软件停止不会切断舵机电源。实体运动前请在实机标定；电脑默认为 MOCK 预演。</p>
+                    <p class="help-text">AI 的同一走法同步网页与串口。串口写入成功不等于实体落子完成；本网页不控制关节、夹爪、电磁铁，也不发送归零指令。</p>
                     <div class="field-stack"><label for="preview-move">动作预演走法（例如 b2e2）</label><input id="preview-move" value="b2e2" maxlength="4"></div>
                     <button id="btn-simulate-move" class="btn btn-secondary">预演当前走法（不运动）</button>
                     <button id="btn-test-sequence" class="btn btn-secondary">测试模拟搬运序列</button>
                     <pre id="robot-trace" class="trace-output">尚未预演</pre>
-                    <details><summary>姿态标定与参数</summary>
-                        <p class="help-text">内部键为 col,row。row=0 为黑方底线；park 为停靠点；capture:0 为第一个吃子槽。先通过厂商工具摆好姿态，再读取示教。模拟角度表不能用于真机。</p>
-                        <div class="field-stack"><label for="teach-key">示教目标</label><input id="teach-key" value="0,0"></div>
-                        <div class="field-stack"><label for="teach-level">高度</label><select id="teach-level"><option value="above">above：棋格上方</option><option value="down">down：取放高度</option></select></div>
-                        <button id="btn-teach" class="btn btn-secondary">读取并记录当前姿态（不运动）</button>
+                    <details><summary>离线模拟预演参数（不用于实机）</summary>
+                        <p class="help-text">内部键为 col,row。row=0 为黑方底线；park 为停靠点；capture:0 为第一个吃子槽。这里只保留原有离线预演数据编辑，不读取实机关节。串口走棋不需要这些角度参数。</p>
                         <button id="btn-calibration-load" class="btn btn-secondary">读取标定文件</button>
                         <label for="calibration-json">标定 JSON</label><textarea id="calibration-json" rows="10" spellcheck="false"></textarea>
                         <button id="btn-calibration-save" class="btn btn-warning">保存标定参数</button>
@@ -179,6 +176,6 @@
 
     <script>window.CHRO_DESKTOP_SIMULATION = {{ desktop_virtual_input|default(false)|tojson }};</script>
     <script src="/static/js/app.js?v=camera-fix-20261117"></script>
-    <script src="/static/js/full_features.js?v=full-dofbot-20261116"></script>
+    <script src="/static/js/full_features.js?v=serial-decision-20261118"></script>
 </body>
 </html>

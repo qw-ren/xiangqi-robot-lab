@@ -20,15 +20,12 @@ proto.action = async function (work) { // 错误统一显示在系统日志。
 proto.init = async function () {
     await originalInit.call(this);
     const bind = (id, work) => document.getElementById(id)?.addEventListener('click', () => this.action(work));
-    bind('btn-dofbot-connect', async () => { const data = await this.api('/dofbot/connect', {}); this.log(`${data.backend.toUpperCase()} 已连接，连接操作没有运动`, 'info'); await this.refreshDofbot(); });
-    bind('btn-dofbot-angles', async () => { const data = await this.api('/dofbot/angles'); document.getElementById('robot-trace').textContent = `六轴角度：${JSON.stringify(data.angles)}`; });
-    bind('btn-dofbot-park', async () => { this.log('正在执行停靠动作…', 'warning'); await this.api('/dofbot/park', {}); this.log('停靠动作完成', 'info'); await this.refreshDofbot(); });
-    bind('btn-dofbot-stop', async () => { await this.api('/dofbot/stop', {}); this.stopDynamicRecognition(); this.setRecognitionMode(false); this.isGameRunning = false; this.log('已软件停止，当前运动段可能仍在执行；这不会断开舵机电源。检查棋盘后重新摆棋开局。', 'warning'); await this.syncFullState(); });
+    bind('btn-dofbot-connect', async () => { const data = await this.api('/dofbot/connect', {port: document.getElementById('serial-port').value.trim(), baud: Number(document.getElementById('serial-baud').value)}); this.log(`${data.backend.toUpperCase()} 已连接，连接操作没有运动`, 'info'); await this.refreshDofbot(); });
+    bind('btn-dofbot-stop', async () => { await this.api('/dofbot/stop', {}); this.stopDynamicRecognition(); this.setRecognitionMode(false); this.isGameRunning = false; this.log('已停止本机后续输出并结束对局；已发消息由下位机自行处理，本机不发送急停或关节命令。', 'warning'); await this.syncFullState(); });
     bind('btn-dofbot-clear', async () => { await this.api('/dofbot/clear', {}); this.log('故障已解除，请重摆标准初局再开始', 'info'); await this.refreshDofbot(); });
     bind('btn-slots-clear', async () => { await this.api('/dofbot/clear', {empty_slots: true}); this.log('已确认吃子槽清空，槽位从 0 重新计数', 'info'); await this.refreshDofbot(); });
     bind('btn-calibration-load', async () => { const data = await this.api('/dofbot/calibration'); document.getElementById('calibration-json').value = JSON.stringify(data.calibration, null, 2); this.log('标定文件已读入编辑器', 'info'); });
     bind('btn-calibration-save', async () => { await this.api('/dofbot/calibration', JSON.parse(document.getElementById('calibration-json').value)); this.log('参数校验通过并已保存', 'info'); await this.refreshDofbot(); });
-    bind('btn-teach', async () => { const data = await this.api('/dofbot/teach', {key: document.getElementById('teach-key').value.trim(), level: document.getElementById('teach-level').value}); document.getElementById('calibration-json').value = JSON.stringify(data.calibration, null, 2); this.log(`示教已保存：${data.angles.join(', ')}`, 'info'); await this.refreshDofbot(); });
     bind('btn-refresh-cameras', () => this.loadLocalCameras());
     bind('btn-camera-check', async () => { if (!['camera', 'network'].includes(this.currentInputSource)) throw new Error('请先选择摄像头输入源'); const response = await fetch(`/api/camera/status?${this.cameraFrameQuery()}`); const data = await response.json(); this.log(JSON.stringify(data), data.camera_opened ? 'info' : 'warning'); });
     bind('btn-disconnect-network', async () => { await this.api('/network_camera/disconnect', {}); this.networkCameraUrl = ''; this.stopLocalCameraFrames(); document.getElementById('input-source').value = 'virtual'; this.changeInputSource(); this.log('网络摄像头已断开', 'info'); });
@@ -43,11 +40,10 @@ proto.init = async function () {
 proto.refreshDofbot = async function () {
     const data = await this.api('/dofbot/status');
     this.dofbot = data;
-    const label = data.backend === 'mock' ? 'MOCK：电脑模拟，无实体动作' : 'DOFBOT：树莓派 Arm_Lib 真机';
-    document.getElementById('dofbot-status').textContent = `${label}｜${data.connected ? '已连接' : '未连接'}｜${data.busy ? '动作中' : '空闲'}｜${data.calibrated ? '标定完整' : data.calibration_error}｜吃子槽 ${data.capture_used}/${data.capture_capacity}${data.slots_confirmed ? '' : '（请先确认已清空）'}${data.fault ? '｜故障：' + data.fault : ''}`;
-    document.getElementById('btn-start-hardware-game').textContent = data.backend === 'mock' ? '开始 DOFBOT 模拟对局' : '开始 DOFBOT 实体对局';
+    const label = data.backend === 'mock' ? 'MOCK：电脑模拟，无实体动作' : 'SERIAL：只发送棋盘级走棋消息';
+    document.getElementById('dofbot-status').textContent = `${label}｜${data.connected ? '已连接' : '未连接'}${data.port ? ' ' + data.port + ' @ ' + data.baud : ''}｜${data.busy ? '发送中' : '空闲'}${data.last_payload ? '｜最近发送 ' + data.last_payload.move : ''}${data.fault ? '｜故障：' + data.fault : ''}`;
+    document.getElementById('btn-start-hardware-game').textContent = data.backend === 'mock' ? '开始模拟器对局' : '开始串口对局';
     document.getElementById('btn-start-hardware-game').disabled = !data.connected || !data.calibrated || !data.slots_confirmed || !!data.fault || data.busy || !!this.currentState?.ai_thinking || !!this.currentState?.pending_dofbot || !!this.currentState?.awaiting_initial_board;
-    document.getElementById('btn-dofbot-park').disabled = !data.connected || data.busy || !!data.fault || this.isGameRunning;
     document.getElementById('btn-dofbot-connect').disabled = data.busy;
     document.getElementById('btn-dofbot-clear').disabled = data.busy || this.isGameRunning;
     document.getElementById('btn-slots-clear').disabled = data.busy || this.isGameRunning;
@@ -77,7 +73,7 @@ proto.syncFullState = async function () {
     this.drawVisualBoard();
     this.showAnalysis(state.ai_analysis || {});
     const el = document.getElementById('game-status');
-    if (state.ai_thinking) el.textContent = state.robot_moving ? 'DOFBOT 正在搬运…' : 'AI 正在思考…';
+    if (state.ai_thinking) el.textContent = state.robot_moving ? '正在发送 AI 决策…' : 'AI 正在思考…';
     else if (state.awaiting_initial_board) el.textContent = '等待标准初局视觉确认';
     else if (state.pending_dofbot) el.textContent = state.ai_analysis?.robot_send_success === false ? '动作失败：请检查后结束本局' : '等待落子后全部棋子视觉确认';
     else if (state.ai_analysis?.error) el.textContent = state.ai_analysis.error;
@@ -100,7 +96,7 @@ proto.syncFullState = async function () {
             this.showVisionObservation(this.latestVisionPreview, false);
         }
     }
-    ['btn-refresh-cameras', 'btn-connect-network', 'btn-disconnect-network', 'btn-calibration-save', 'btn-teach'].forEach(id => { document.getElementById(id).disabled = this.isGameRunning || !!state.robot_moving; });
+    ['btn-refresh-cameras', 'btn-connect-network', 'btn-disconnect-network', 'btn-calibration-save', 'serial-port', 'serial-baud'].forEach(id => { document.getElementById(id).disabled = this.isGameRunning || !!state.robot_moving; });
 };
 
 proto.startGame = async function (mode = 'simulation') {
@@ -113,7 +109,7 @@ proto.startGame = async function (mode = 'simulation') {
         this.failedAutoFen = null;
         this.selectedSquare = null;
         await this.syncFullState();
-        this.log(`${mode === 'hardware' ? 'DOFBOT' : '虚拟'}对局已开始：程序执${this.colorName(data.ai_color)}，${this.colorName(data.first_player)}先手${data.awaiting_initial_board ? '；等待摄像头确认标准初局' : ''}`, 'info');
+        this.log(`${mode === 'hardware' ? '串口/模拟器' : '虚拟'}对局已开始：程序执${this.colorName(data.ai_color)}，${this.colorName(data.first_player)}先手${data.awaiting_initial_board ? '；等待摄像头确认标准初局' : ''}`, 'info');
         if (['camera', 'network'].includes(this.currentInputSource)) { this.setRecognitionMode(true); this.startDynamicRecognition(); }
         if (!data.awaiting_initial_board) this.checkAutoTriggerAI(data.current_fen || data.fen);
         await this.refreshDofbot();
@@ -149,7 +145,7 @@ proto.startAIStatusPolling = function () {
                     this.failedAutoFen = this.currentState.current_fen;
                     this.log(analysis.error || analysis.robot_send_error || '动作失败', 'error');
                 } else if (analysis.best_move) {
-                    this.log(`AI 选择 ${analysis.best_move}；${data.pending_dofbot ? '动作已结束，等待视觉核对' : '正式棋局已更新'}`, 'info');
+                    this.log(`AI 选择 ${analysis.best_move}；${data.pending_dofbot ? '网页已同步，走棋消息已发送；等待视觉核对' : '正式棋局已更新'}`, 'info');
                     if (['camera', 'network'].includes(this.currentInputSource) && this.isGameRunning) { this.setRecognitionMode(true); this.startDynamicRecognition(); }
                 }
                 await this.refreshDofbot();
@@ -254,7 +250,8 @@ proto.showAnalysis = function (analysis) { // 完整展示引擎分析，不将 
         ['最佳走法', analysis.best_move], ['搜索深度', analysis.depth],
         ['评估分数（引擎当前方视角，厘兵）', analysis.score],
         ['杀棋距离（引擎 mate 值）', analysis.mate], ['搜索节点', analysis.nodes],
-        ['PV 主变化', analysis.pv], ['错误', analysis.error || analysis.robot_send_error]
+        ['PV 主变化', analysis.pv], ['走棋输出', analysis.robot_send_response],
+        ['串口发送的走法', analysis.serial_payload?.move], ['本步编号', analysis.serial_payload?.command_id], ['错误', analysis.error || analysis.robot_send_error]
     ];
     let shown = 0;
     for (const [label, value] of fields) {

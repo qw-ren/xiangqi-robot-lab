@@ -1,4 +1,4 @@
-# 树莓派64位系统依赖；Arm_Lib由对应DOFBOT型号的厂商驱动提供。
+# 树莓派64位系统依赖；本项目不依赖机械臂 SDK/GPIO。
 Flask==3.1.3
 flask-cors==6.0.5
 cchess==1.25.5
@@ -7,4 +7,3 @@ opencv-contrib-python
 onnxruntime
 pandas
 pyserial==3.5
-gpiozero

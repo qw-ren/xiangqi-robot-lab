@@ -125,3 +125,8 @@ IP_CAMERA_URL = "http://192.168.0.101:8080/?action=stream"  # 修改为您香橙
 FEN_START_POSITION = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
 
 ENGINE_THREADS = 2  # 本机联调的引擎线程数量。
+
+# 串口只发送 AI 的棋盘级走法，不连接机械臂 SDK 或 GPIO。
+ROBOT_BACKEND = 'mock'  # mock 保留无设备模拟；serial 只输出走棋。
+ROBOT_SERIAL_PORT = os.environ.get('CHRO_ROBOT_SERIAL', '')  # Windows 如 COM3；树莓派如 /dev/ttyUSB0。
+ROBOT_SERIAL_BAUD = 115200  # 8N1，双方需一致。

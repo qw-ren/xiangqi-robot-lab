@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-  # 中文注释便于后续修改。
-"""DOFBOT 网页服务和落子确认；原 STM32 TCP 路径仍单独保留。"""  # 仅启用对应启动参数时使用。
+"""完整网页的走棋串口输出与视觉确认；保留旧接口名以兼容现有页面。"""  # 仅启用对应启动参数时使用。
 import copy  # 保存未提交的预期棋局。
 import json  # 导出棋谱与全部棋子坐标。
 import threading  # 状态更新使用同一个锁。
+import uuid  # 为每局生成唯一编号，避免跨局重复发送。
 from urllib.parse import urlsplit  # 校验浏览器提交来源。
 from flask import Blueprint, Response, g, jsonify, request  # 扩展原 Flask 网页。
 from xq_utils.rules import checked_transition  # 规则层作为局面的唯一校验来源。
-from robot.dofbot_adapter import DofbotController, validate_calibration, validate_pose  # 直接 Arm_Lib 控制层。
+from robot.dofbot_adapter import DofbotController, validate_calibration, validate_pose  # 串口走棋输出与离线预演层。
 from robot import RobotSendResult  # 兼容原 AI 调用接口。
 
 bp = Blueprint('dofbot', __name__)  # 集中注册扩展接口。
@@ -19,17 +20,21 @@ def app_module():  # 延迟导入以避免循环引用。
     return app  # 返回组合模块。
 
 
-def enabled():  # 原版测试默认仍使用原 TCP 路径。
-    return getattr(app_module().config, 'ROBOT_BACKEND', 'tcp') in ('mock', 'dofbot')  # 新入口显式选择后启用。
+def enabled():
+    """功能：所有 Web 启动方式统一使用安全的 mock/串口流程；无参数。"""
+    return True
 
 
 def get_controller():  # 创建当前进程唯一的机械臂服务。
     global controller  # 复用设备对象。
     config = app_module().config  # 获取启动参数。
-    backend = getattr(config, 'ROBOT_BACKEND', 'mock')  # 电脑默认预演。
-    if backend not in ('mock', 'dofbot'):  # 原 TCP 不创建 DOFBOT。
-        raise ValueError('当前启动方式未启用 DOFBOT；请使用 run_local.py')  # 提供正确入口。
+    backend = getattr(config, 'ROBOT_BACKEND', 'mock')
+    backend = 'serial' if backend == 'dofbot' else backend  # 电脑默认预演。
+    if backend not in ('mock', 'serial'):  # 原 TCP 不创建 DOFBOT。
+        raise ValueError('只支持 mock 或 serial 后端，已取消本机机械臂和 TCP 动作控制')  # 提供正确入口。
     if controller is None or controller.backend != backend:  # 首次创建或测试切换时替换。
+        if controller is not None:
+            controller.close()  # 切换模式前释放旧串口。
         controller = DofbotController(backend, getattr(config, 'DOFBOT_CALIBRATION', 'data/dofbot_calibration.json'))  # 路径可配置。
     return controller  # 不自动连接或运动。
 
@@ -51,13 +56,7 @@ def start_hardware(data):  # 替代原版启动即 STM32 归零流程。
         return jsonify(success=False, error='当前动作或视觉确认未结束；先等待，故障时使用软件停止'), 409  # 不自动取消实体搬运。
     status = ctl.status()  # 查询连接与标定。
     if not status['connected'] or status['fault'] or status['busy']:  # 开始按钮需要先连接且空闲。
-        return jsonify(success=False, error=status['fault'] or '请先点击连接 DOFBOT'), 409  # 不把连接成功当作开局成功。
-    if not status['calibrated']:  # 实体对弈使用所有可达格。
-        return jsonify(success=False, error=status['calibration_error']), 400  # 未标定不能运动。
-    if not status['slots_confirmed']:  # 重启后不猜测吃子槽是否仍有棋子。
-        return jsonify(success=False, error='请先清空收纳区，再点击确认吃子槽位已清空'), 400  # 防止覆盖上次留下的棋子。
-    if ctl.backend == 'dofbot' and data.get('input_source') not in ('camera', 'network'):  # 实机依赖新鲜摄像头闭环。
-        return jsonify(success=False, error='实体模式请选择本地或网络摄像头，不能用静态图片确认落子'), 400  # 阻止离线图片充当反馈。
+        return jsonify(success=False, error=status['fault'] or '请先连接走棋串口或模拟器'), 409  # 不把连接成功当作开局成功。
     color = data.get('ai_color', 'black')  # 用户可选择程序执色。
     first = data.get('first_player', 'red')  # 黑先手仅用于调试。
     if color not in ('red', 'black') or first not in ('red', 'black'):  # 校验枚举值。
@@ -67,7 +66,9 @@ def start_hardware(data):  # 替代原版启动即 STM32 归零流程。
         return jsonify(success=False, error='Pikafish 未就绪'), 503  # 页面显示可操作错误。
     engine.reset_game()  # 清理上一局引擎缓存。
     fen = app.apply_turn_to_fen(app.STANDARD_INITIAL_FEN, first)  # 标准初局按选择方开始。
-    gs.update(initial_fen=fen, current_fen=fen, board_state=dict(app.STANDARD_INITIAL_BOARD), move_history=[], display_history=[], turn_count=0, is_game_running=True, ai_color=color, player_color=app.opposite_color(color), first_player=first, robot_mode='hardware', robot_moving=False, pending_ai_move=None, pending_dofbot=None, vision_pause_until=0.0, vision_pause_reason='', awaiting_physical_baseline=False, awaiting_initial_board=ctl.backend == 'dofbot', robot_baseline_match_count=0, last_player_move=None, last_ai_command_token=None, last_dofbot_token=None, post_robot_guard_until=0.0)  # 一次建立完整棋局。
+    gs.update(initial_fen=fen, current_fen=fen, board_state=dict(app.STANDARD_INITIAL_BOARD), move_history=[], display_history=[], turn_count=0, is_game_running=True, ai_color=color, player_color=app.opposite_color(color), first_player=first, robot_mode='hardware', robot_moving=False, pending_ai_move=None, pending_dofbot=None, vision_pause_until=0.0, vision_pause_reason='', awaiting_physical_baseline=False, awaiting_initial_board=ctl.backend == 'serial' and data.get('input_source') in ('camera', 'network'), robot_baseline_match_count=0, last_player_move=None, last_ai_command_token=None, last_dofbot_token=None, post_robot_guard_until=0.0)  # 一次建立完整棋局。
+    gs['game_id'] = uuid.uuid4().hex  # command_id 包含对局编号。
+    gs['vision_feedback'] = data.get('input_source') in ('camera', 'network')  # 维持原实时视觉核对。
     gs['ai_analysis'] = {}  # 不显示上一局分析。
     if app.recognizer is not None:  # 清除旧局识别缓存。
         app.reset_dynamic_tracking(app.recognizer)  # 要求开局后采集新画面。
@@ -80,6 +81,14 @@ def commit_pending():  # 只在模拟完成或新鲜视觉确认后提交。
     pending = gs.get('pending_dofbot')  # 原局面与预期结果分开。
     if not pending:  # 同一落子不能提交两次。
         return False  # 重复请求无副作用。
+    if pending.get('committed'):  # 网页已经同步显示此决策；视觉确认不能再记一步。
+        gs['pending_dofbot'] = None
+        gs['awaiting_physical_baseline'] = False
+        gs['robot_baseline_match_count'] = 0
+        gs['ai_analysis']['physical_board_confirmed'] = True
+        if app.recognizer is not None:
+            app.sync_dynamic_baseline_to_game_state(app.recognizer)
+        return True
     preview = pending['preview']  # cchess 已校验结果。
     gs['board_state'] = preview['board_state']  # 替换所有存活棋子的坐标。
     gs['current_fen'] = preview['fen']  # 同步轮次和计数。
@@ -97,72 +106,72 @@ def commit_pending():  # 只在模拟完成或新鲜视觉确认后提交。
     return True  # 成功提交。
 
 
-def apply_move(move):  # 由原 AI 工作线程调用。
-    app = app_module()  # 不另建棋局。
-    gs = app.game_state  # 取得唯一正式状态。
-    ctl = get_controller()  # 已经通过连接按钮初始化。
-    with state_lock:  # 先预留动作令牌，再离锁执行慢动作。
-        if not gs.get('is_game_running'):  # 服务停止或用户结束后不能下发迟到的搜索结果。
-            raise ValueError('对局已结束，忽略迟到的 AI 走法')  # 不连接硬件。
-        if gs.get('pending_dofbot') or ctl.fault:  # 失败或待确认时不能重发。
-            raise ValueError(ctl.fault or '上一动作正在等待视觉确认')  # 保持旧正式局面。
-        token = f"{len(gs['move_history'])}:{move}"  # 相同局面只发一次。
-        if gs.get('last_dofbot_token') == token:  # 网络重复请求不重复运动。
-            raise ValueError('相同动作已下发，不能自动重发')  # 故障后必须人工检查。
-        preview = checked_transition(gs['current_fen'], move)  # 先规则校验。
-        plan = ctl.plan(move, gs['board_state'])  # 完整预检查标定和吃子槽。
-        gs['pending_dofbot'] = dict(move=move, token=token, preview=copy.deepcopy(preview), motion_done=False)  # 旧棋局仍为正式状态。
-        gs['last_dofbot_token'] = token  # 下发前保存，异常也不自动重发。
-        gs['robot_moving'] = True  # 识别线程暂停处理人类走子。
-        gs['ai_analysis'].update(ai_move_token=token, ai_move_applied=False, robot_backend=ctl.backend, robot_send_success=None, robot_send_acknowledged=False, robot_log_messages=['DOFBOT 动作已规划；正式棋局等待动作和视觉确认'])  # 显示真实阶段。
-    try:  # 慢动作不持有棋局锁，软件停止请求可以进入。
-        ctl.execute(plan)  # 真机调用 Arm_Lib；mock 只记录轨迹。
-        with state_lock:  # 写入完成状态。
-            pending = gs.get('pending_dofbot')  # 软件停止可能取消棋局。
-            if not pending or ctl.stop_event.is_set():  # 已停止不能宣布成功。
-                raise RuntimeError('动作已停止，正式棋局未提交')  # 留待现场检查。
-            pending['motion_done'] = True  # 机械臂已返回停靠点。
-            gs['robot_moving'] = False  # 允许重新采集画面。
-            gs['awaiting_physical_baseline'] = ctl.backend == 'dofbot'  # 真机必须视觉核对。
-            gs['robot_baseline_match_count'] = 0  # 清除动作前稳定计数。
-            gs['ai_analysis'].update(robot_send_success=True, robot_send_acknowledged=True, robot_send_response='DOFBOT_MOTION_DONE', robot_log_messages=['DOFBOT 已完成动作并退回停靠点；等待新的稳定画面核对全部棋子'])  # 动作完成不等于棋局已提交。
-            if app.recognizer is not None:  # 丢弃动作前的稳定帧。
-                app.reset_dynamic_tracking(app.recognizer)  # 后续只接受新识别。
-            if ctl.backend == 'mock':  # 电脑预演无真实棋盘。
-                commit_pending()  # 模拟整轮完成，页面明确显示 mock。
-        return RobotSendResult(success=True, command_text=move, response='STATE:5,RESULT:1')  # 兼容原 AI 调用者。
-    except Exception as exc:  # 不回滚或猜测真实棋子位置。
-        with state_lock:  # 原正式局面保持不变。
-            gs['robot_moving'] = False  # 页面可接收停止/故障处理。
-            gs['ai_analysis'].update(robot_send_success=False, robot_send_acknowledged=False, robot_send_error=str(exc), ai_move_applied=False, robot_log_messages=[str(exc), '禁止自动重发；检查棋盘后结束本局重新摆棋'])  # 不把失败当成玩家回合。
-        return RobotSendResult(success=False, command_text=move, error=str(exc))  # 前端显示失败。
+def apply_move(move, wait_for_vision=True):
+    """功能：同一次 AI 决策同步串口和网页；不调用任何机械臂动作。
+
+    move：Pikafish bestmove 的 ICCS；wait_for_vision：是否继续保留原实时视觉核对。
+    串口只报告已写入，实体是否落子由后续新鲜视觉判定，不能把预测当成实测。
+    """
+    app = app_module()
+    gs = app.game_state
+    ctl = get_controller()
+    with state_lock:
+        if not gs.get('is_game_running'):
+            raise ValueError('对局已结束，忽略迟到的 AI 走法')
+        if gs.get('pending_dofbot') or ctl.fault:
+            raise ValueError(ctl.fault or '上一决策尚待视觉核对')
+        gs.setdefault('game_id', uuid.uuid4().hex)
+        token = f"{gs['game_id']}:{len(gs['move_history'])}:{move}"
+        if gs.get('last_dofbot_token') == token:
+            raise ValueError('本步已经尝试下发，不自动重发')
+        preview = checked_transition(gs['current_fen'], move)
+        analysis = gs['ai_analysis']
+        analysis.update(ai_move_token=token, ai_move_applied=False, robot_backend=ctl.backend,
+                        robot_send_success=None, robot_send_acknowledged=False,
+                        physical_board_confirmed=False, all_pieces=preview['pieces'])
+        gs['last_dofbot_token'] = token  # 在发送前预留；短写后也不重新搜索/重发。
+        try:
+            payload = None
+            if ctl.backend == 'serial':
+                payload = ctl.send_move(move, gs['current_fen'], preview, token,
+                                        gs['game_id'], len(gs['move_history']))
+            gs['pending_dofbot'] = dict(move=move, token=token, preview=copy.deepcopy(preview))
+            commit_pending()  # 网页、FEN、历史统一使用本次决策的同一份结果。
+            if wait_for_vision and ctl.backend == 'serial' and gs.get('vision_feedback'):
+                gs['pending_dofbot'] = dict(move=move, token=token, preview=copy.deepcopy(preview),
+                                           serial_sent=True, committed=True)
+                gs['awaiting_physical_baseline'] = True
+                if app.recognizer is not None:
+                    app.reset_dynamic_tracking(app.recognizer)
+            gs['robot_moving'] = False
+            gs['vision_pause_until'] = 0.0
+            analysis.update(robot_send_success=True if payload else None,
+                            robot_send_acknowledged=False, serial_payload=payload,
+                            robot_send_response='SERIAL_WRITTEN' if payload else 'SIMULATION_ONLY',
+                            robot_send_error='', robot_log_messages=[
+                                f'AI 决策 {move} 已同步网页',
+                                '同一步棋已写入串口（未确认实体执行）' if payload else '离线模拟，没有发送串口'])
+            return RobotSendResult(success=True, command_text=move,
+                                   response='SERIAL_WRITTEN' if payload else 'SIMULATION_ONLY')
+        except Exception as exc:
+            gs['robot_moving'] = False
+            analysis.update(robot_send_success=False, robot_send_acknowledged=False,
+                            robot_send_error=str(exc), ai_move_applied=False,
+                            robot_log_messages=[str(exc), '未提交网页落子；禁止自动重发，请检查接收端'])
+            return RobotSendResult(success=False, command_text=move, error=str(exc))
 
 
-def apply_virtual(move):  # 纯虚拟棋局无需等待实体运动计时器。
-    with state_lock:  # 提交棋位、FEN 和历史时保持一致。
-        gs = app_module().game_state  # 唯一正式状态。
-        if not gs.get('is_game_running'):  # 已结束的旧搜索不能改动新界面。
-            raise ValueError('对局已结束，忽略迟到的 AI 走法')  # 保持结束状态。
-        preview = checked_transition(gs['current_fen'], move)  # 校验 AI 结果。
-        gs['board_state'] = preview['board_state']  # 提交全部棋位。
-        gs['current_fen'] = preview['fen']  # 更新轮次。
-        gs['move_history'].append(move)  # 记录 AI 走棋。
-        gs['display_history'].append(f'程序 {move}')  # 原网页棋谱格式。
-        gs['turn_count'] += 1  # 更新步数。
-        gs['robot_moving'] = False  # 无实体动作，不保留15秒占用。
-        gs['vision_pause_until'] = 0.0  # 下一轮可以继续输入。
-        gs['ai_analysis'].update(ai_move_applied=True, robot_send_success=True, robot_send_acknowledged=True, robot_backend='virtual', all_pieces=preview['pieces'])  # 返回真实虚拟状态。
-        if app_module().recognizer is not None:  # 摄像头模拟对弈也要同步基线。
-            app_module().sync_dynamic_baseline_to_game_state(app_module().recognizer)  # 复用原识别器。
-        return RobotSendResult(success=True, command_text=move, response='RESULT:1,MODE:simulation')  # 不连接任何控制器。
+def apply_virtual(move):
+    """功能：保留虚拟对局；move 是 ICCS；已连接串口时也同步发送同一决策。"""
+    return apply_move(move, wait_for_vision=False)
 
 
 def accept_observation(board, stable):  # 仅动态摄像头处理器调用；无网页伪造确认接口。
     gs = app_module().game_state  # 获取最新正式状态。
     pending = gs.get('pending_dofbot')  # 查找待确认的 AI 结果。
     expected = pending['preview']['board_state'] if pending else gs.get('board_state', {})  # 开局核对标准初局。
-    if pending and not pending.get('motion_done'):  # 动作期间的画面无效。
-        return False, '机械臂尚未结束动作'  # 不累计计数。
+    if pending and not pending.get('serial_sent'):  # 动作期间的画面无效。
+        return False, '本步尚未完成串口发送'  # 不累计计数。
     if not stable or board != expected:  # 必须颜色、类型、位置全部相等。
         gs['robot_baseline_match_count'] = 0  # 不连续就重新累计。
         return False, '等待新鲜稳定画面与预期全部棋子完全一致'  # 不只比较占用格。
@@ -225,11 +234,16 @@ def status():  # 页面独立显示硬件状态。
 @bp.route('/api/dofbot/connect', methods=['POST'])  # 连接操作与开局分离。
 def connect():  # 不发运动命令。
     try:  # 真实依赖失败会显示在网页。
-        if blocked():  # 动作或视觉确认期间不重新探测总线。
+        if blocked() or app_module().game_state.get('is_game_running'):  # 对局中不切换输出端口。
             return jsonify(success=False, error='当前任务尚未完成，请等待'), 409  # 减少读写冲突。
-        return jsonify(success=True, **get_controller().connect())  # 读取六轴通信反馈。
+        data = request.get_json(silent=True) or {}
+        if data.get('port'):  # 页面填写串口后切换输出后端，不触发运动。
+            app_module().config.ROBOT_BACKEND = 'serial'
+            app_module().config.ROBOT_SERIAL_PORT = data['port']
+            app_module().config.ROBOT_SERIAL_BAUD = int(data.get('baud', 115200))
+        return jsonify(success=True, **get_controller().connect(data.get('port'), data.get('baud')))  # 读取六轴通信反馈。
     except Exception as exc:  # 例如 Windows 无 Arm_Lib。
-        return jsonify(success=False, error=f'DOFBOT 连接失败：{exc}'), 503  # 不伪装为模拟连接。
+        return jsonify(success=False, error=f'走棋串口/模拟器连接失败：{exc}'), 503  # 不伪装为模拟连接。
 
 
 @bp.route('/api/dofbot/calibration', methods=['GET', 'POST'])  # 完整 JSON 编辑接口。
@@ -295,6 +309,8 @@ def park():  # 不把连接操作绑定为归零。
     reserved = False  # 只有当前请求预留过才清理占用标志。
     try:  # 归位可能需要多秒。
         ctl = get_controller()  # 已配置设备。
+        if ctl.backend != 'mock':
+            return jsonify(success=False, error='本机停靠动作已移除；只发送走棋串口消息'), 410
         pose = validate_pose(ctl.calibration.get('park'))  # 未示教时直接拒绝。
         if ctl.busy or app_module().game_state.get('robot_moving'):  # 避免重复点击排队运动。
             raise ValueError('机械臂忙，请等待')  # 不排队重发。
@@ -302,7 +318,7 @@ def park():  # 不把连接操作绑定为归零。
         reserved = True  # 记录本次动作拥有占用标志。
         state_lock.release()  # 慢动作不能阻塞软件停止请求。
         g.chro_state_locked = False  # after_request 不再重复释放。
-        ctl.execute(dict(capture=False, steps=[dict(label='park', angles=pose, gripping=False)]))  # 这是实际运动入口。
+        ctl.execute(dict(capture=False, steps=[dict(label='park', angles=pose, gripping=False)]))  # 只保留 mock 轨迹记录；串口后端已在上方拒绝。
         return jsonify(success=True, **ctl.status())  # 返回完成或模拟结果。
     except Exception as exc:  # 失败时动作层锁存故障。
         return jsonify(success=False, error=str(exc)), 400  # 不重试。
@@ -357,5 +373,5 @@ def clear():  # 不发任何运动命令。
 @bp.route('/api/game/export')  # 下载棋谱与全部棋子坐标。
 def export_game():  # 本机 JSON 文件便于后续串口模块复用。
     gs = app_module().game_state  # 只导出已经正式提交的结果。
-    data = dict(format='CHRO-DOFBOT-1', coordinates='row=0..9 黑上红下，col=0..8 左到右；内部键为 col,row', initial_fen=gs['initial_fen'], current_fen=gs['current_fen'], moves=gs['move_history'], pieces=pieces_payload(gs.get('board_state') or {}), pending=bool(gs.get('pending_dofbot')))  # 不导出停止凭据。
+    data = dict(format='CHRO-DOFBOT-1', coordinates='row=0..9 黑上红下，col=0..8 左到右；内部键为 col,row', initial_fen=gs['initial_fen'], current_fen=gs['current_fen'], moves=gs['move_history'], pieces=pieces_payload(gs.get('board_state') or {}), pending=bool(gs.get('pending_dofbot')), serial_payload=gs.get('ai_analysis', {}).get('serial_payload'), physical_board_confirmed=gs.get('ai_analysis', {}).get('physical_board_confirmed', False))  # 不导出停止凭据。
     return Response(json.dumps(data, ensure_ascii=False, indent=2), mimetype='application/json', headers={'Content-Disposition': 'attachment; filename=xiangqi_game.json'})  # 浏览器直接下载。

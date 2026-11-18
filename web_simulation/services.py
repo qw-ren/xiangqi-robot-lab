@@ -96,7 +96,7 @@ def get_recognizer(camera_index=None, camera_source=None, camera_url=None):
             else:
                 logger.info("摄像头源 %s 已启动", source)
 
-        if getattr(config, 'ROBOT_BACKEND', '') == 'dofbot':  # DOFBOT 对局由规则层复核少子残局。
+        if getattr(config, 'ROBOT_BACKEND', '') in ('serial', 'dofbot'):  # 串口实体对局继续复核少子残局。
             _app.recognizer.dynamic_tracker.min_piece_count = 2  # 不把少于10子的合法残局永久丢弃。
             _app.recognizer.dynamic_tracker.stable_seconds = 0.4  # 手离开棋盘后等待稳定再判断走子。
         return _app.recognizer

@@ -47,4 +47,4 @@ ArUco 原始观测与正式棋局分开：开局前可显示观测棋盘，对�
 
 `app.py` 持有共享服务；`services.py` 管理识别器与相机；`routes/recognition.py` 处理识别响应；
 `vision/aruco.py` 为唯一 ArUco 核心；`vision/observation.py` 生成质量及离散坐标；
-`dofbot.py` 保留队友的后端状态机，`robot/dofbot_adapter.py` 保留设备适配。
+`dofbot.py` 保留后端状态保护与视觉核对，`robot/dofbot_adapter.py` 现在仅做走棋串口输出和离线预演，移除了本机舵机/GPIO 访问。连接步骤及消息字段见 [串口走棋接口](../docs/project/SERIAL_MOVE_OUTPUT.md)。
