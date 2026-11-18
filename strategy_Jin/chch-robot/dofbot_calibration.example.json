@@ -1,0 +1,11 @@
+{
+  "end_effector": "gripper",
+  "move_ms": 1000,
+  "settle_s": 0.3,
+  "tolerance_deg": 8,
+  "open_angle": 60,
+  "close_angle": 125,
+  "park": null,
+  "cells": {},
+  "capture_slots": []
+}

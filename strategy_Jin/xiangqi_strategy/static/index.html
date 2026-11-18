@@ -1,0 +1,470 @@
+<!doctype html> <!-- 按HTML5解析页面。 -->
+<html lang="zh-CN"> <!-- 网页语言为简体中文。 -->
+<meta charset="utf-8"> <!-- UTF-8保证中文棋子正常显示。 -->
+<meta name="viewport" content="width=device-width,initial-scale=1"> <!-- 手机按设备宽度布局。 -->
+<title>中国象棋策略控制台</title> <!-- 浏览器标签页名称。 -->
+<style> /* 以下为页面样式，尺寸和颜色在这里调整。 */
+body{font-family:system-ui,'Microsoft YaHei',sans-serif;background:#f4f2eb;color:#252922;margin:0;padding:24px} /* 页面字体、背景和外围留白。 */
+main{max-width:1100px;margin:auto} /* 限制内容最大宽度并居中。 */
+h1{font-size:26px} /* 主标题字号。 */
+section{display:flex;flex-wrap:wrap;gap:24px} /* 棋盘与侧栏并排，窄屏换行。 */
+.board{display:grid;grid-template-columns:repeat(9,1fr);background:#d9bc86;padding:12px;width:min(90vw,480px);aspect-ratio:9/10;gap:2px} /* 9列×10行棋盘，最大宽度480px。 */ /* [CSS-001] repeat来源CSS Grid：repeat(9,1fr)把列轨道重复9次，每列1份空间。 [CSS-002] min来源CSS数学函数：min(90vw,480px)取视口宽90%与480像素的较小值。 */
+.cell{font-size:clamp(17px,3vw,26px);background:#efe0b9;border:1px solid #b3945b;padding:0;min-width:0;color:#171c18} /* 单个交叉点的按钮样式。 */ /* [CSS-003] clamp来源CSS数学函数：clamp(17px,3vw,26px)把随视口变化的字号限制在17至26像素之间。 */
+.red{color:#a62c25} /* 红方文字颜色。 */
+.sel{background:#adce99} /* 已选起点底色。 */
+.legal{outline:2px solid #37804b;outline-offset:-3px} /* 当前起点可到达的位置。 */
+button{cursor:pointer;padding:8px 12px;border-radius:4px;border:1px solid #b6b8ac;background:white} /* 通用按钮样式。 */
+button:hover{filter:brightness(.95)} /* 悬停稍微变暗。 */ /* [CSS-004] brightness来源CSS Filter：brightness(.95)设置为原亮度95%，作用于悬停按钮。 */
+input,select{padding:8px;max-width:95%;margin:4px 0} /* 输入框和下拉框尺寸。 */
+aside{flex:1;min-width:290px} /* 控制侧栏占据剩余空间。 */
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px} /* 待执行JSON自动换行。 */
+#error{color:#9f2828;min-height:25px} /* 错误提示区域。 */
+#hist{max-height:190px;overflow:auto} /* 棋谱超高后滚动。 */
+label{display:block;margin:10px 0} /* 每组输入独占一行。 */
+small{color:#596254} /* 辅助说明文字颜色。 */
+#fen{width:95%} /* 初始局面输入框宽度。 */
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0} /* 操作按钮排列。 */
+</style> <!-- 样式结束。 -->
+<main> <!-- 主内容开始。 -->
+<h1>中国象棋策略控制台</h1> <!-- 主标题。 -->
+<p>红方在下，黑方在上。虚拟模式点击起点和终点；实机模式由视觉输入人的走法。</p> <!-- 操作说明。 -->
+<section> <!-- 棋盘和控制面板容器。 -->
+<div id="board" class="board" aria-label="象棋棋盘"></div> <!-- 脚本生成90个交叉点。 -->
+<aside> <!-- 控制面板开始。 -->
+<strong id="status">正在连接</strong> <!-- 阶段、行棋方和半回合数。 -->
+<p id="clock"></p> <!-- 双方演示棋钟。 -->
+<small id="engine"></small> <!-- 引擎名称或路径。 -->
+<label>访问令牌 <input id="token" type="password" placeholder="仅局域网开放时需要"></label> <!-- 对应XIANGQI_TOKEN。 -->
+<label>运行模式 <select id="mode"><option value="virtual">虚拟对弈</option><option value="robot">实机闭环</option></select> AI执 <select id="side"><option value="b">黑</option><option value="w">红</option></select></label> <!-- 新建时提交模式和AI阵营。 -->
+<label>搜索时长 <select id="ms"><option value="300">300 ms</option><option value="1000" selected>1000 ms</option><option value="3000">3000 ms</option></select></label> <!-- 单步搜索时间，单位毫秒。 -->
+<label>初始 FEN 或人工确认后的残局<input id="fen" placeholder="留空使用标准开局"></label> <!-- 留空则后端使用START。 -->
+<label><input type="checkbox" id="confirmed"> 已核对真实棋盘，控制端静止</label> <!-- 实机新局必须勾选。 -->
+<div class="actions"> <!-- 操作按钮容器。 -->
+<button id="new">新建对局</button> <!-- 发送new。 -->
+<button id="ai">AI 走一步</button> <!-- 手动发送ai。 -->
+<button id="undo">虚拟悔棋两步</button> <!-- 回退两个半回合。 -->
+<button id="export">导出棋谱</button> <!-- 下载正式棋局。 -->
+</div> <!-- 按钮容器结束。 -->
+<p id="error"></p> <!-- 接口或网络错误。 -->
+<p><small>棋钟为演示用累计计时，执行及视觉确认期间暂停。重复局面进入人工裁决；实机故障后禁止盲目重发动作。</small></p> <!-- 执行约束说明。 -->
+<h3>已提交棋谱</h3> <!-- 只展示commit后的记录。 -->
+<div id="hist"></div> <!-- 中文记谱和ICCS走法。 -->
+<h3>待执行与确认</h3> <!-- PLAN区域标题。 -->
+<pre id="pending">无</pre> <!-- 尚未确认的预期局面。 -->
+</aside> <!-- 控制面板结束。 -->
+</section> <!-- 主区域结束。 -->
+</main> <!-- 主内容结束。 -->
+<script> // 浏览器脚本通过HTTP调用app.py。
+/** 功能：按HTML id取得元素；参数id：元素id字符串；返回：DOM元素或null。 */
+// [JS-001] document.getElementById｜来源：浏览器DOM API：Document.getElementById
+// 功能：查找指定id的元素。
+// 参数 elementId=id：元素id字符串
+// 返回：Element或null。
+const $ = id => document.getElementById(id), names = {r:'車',n:'馬',b:'象',a:'士',k:'將',c:'砲',p:'卒',R:'俥',N:'傌',B:'相',A:'仕',K:'帥',C:'炮',P:'兵'}; // $取元素；names映射14种棋子名称。
+let state = {}, legal = [], selected = null, busy = false; // 后端状态、合法走法、已选ICCS起点、请求互斥标志。
+/** 功能：生成请求头；参数：无，读取token输入框；返回：JSON类型和X-Token。 */
+// [JS-002] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='token'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+const headers = () => ({'Content-Type':'application/json','X-Token':$('token').value}); // 每次请求读取最新令牌。
+
+/** 功能：生成请求唯一编号；参数：无；返回：UUID或时间戳加随机数。 */
+function id() {
+    // [JS-003] crypto.randomUUID｜来源：浏览器Web Crypto API：Crypto.randomUUID
+    // 功能：生成随机UUID作为请求编号。
+    // 参数 本次没有显式参数；省略的可选参数使用默认值
+    // 返回：UUID字符串；可用性受浏览器安全上下文等影响。
+    // [JS-004] Date.now｜来源：JavaScript内置Date.now
+    // 功能：读取当前Unix时间戳。
+    // 参数 本次没有显式参数；省略的可选参数使用默认值
+    // 返回：毫秒整数，用于备用编号。
+    // [JS-005] Math.random｜来源：JavaScript内置Math.random
+    // 功能：产生备用编号所需随机数；这里不用于安全密钥。
+    // 参数 本次没有显式参数；省略的可选参数使用默认值
+    // 返回：0到1之间、包含0但不含1的浮点数。
+    return crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random()
+}
+
+/** 功能：请求JSON接口；参数path：接口路径；opts：fetch配置，默认{}；返回：解析结果Promise；HTTP失败抛错。 */
+async function api(path, opts = {}) {
+    // [JS-006] fetch｜来源：浏览器Fetch API（全局fetch）
+    // 功能：发送HTTP请求；仅收到HTTP错误状态不会自动reject，因此api里检查r.ok。
+    // 参数 input=path：请求URL或路径
+    // 参数 init={...opts, headers:headers()}：配置对象；此处展开opts并设置headers为headers()的结果
+    // 返回：Promise<Response>。
+    // [JS-007] headers｜来源：本项目 static/index.html 的<script>中定义，headers箭头函数
+    // 功能：读取令牌输入框并生成请求头。
+    // 参数 本次没有显式参数；省略的可选参数使用默认值
+    // 返回：包含Content-Type和X-Token的对象。
+    let r = await fetch(path, {...opts, headers:headers()});
+    // [JS-008] Error｜来源：JavaScript内置Error
+    // 功能：创建异常对象；配合throw抛出。
+    // 参数 message='HTTP ' + r.status + ' 请检查访问令牌'：HTTP状态或后端错误说明
+    // 返回：Error对象。
+    if (!r.ok) throw Error('HTTP ' + r.status + ' 请检查访问令牌');
+    // [JS-009] r.json｜来源：浏览器Fetch API：Response.json
+    // 功能：读取HTTP响应体并解析JSON。
+    // 参数 本次没有显式参数；省略的可选参数使用默认值
+    // 返回：Promise，解析成功得到对象/列表。
+    return r.json()
+}
+
+/** 功能：提交动作并刷新；参数type：new/ai等动作；data：动作字段，默认{}；返回：Promise<void>；错误显示在网页。 */
+async function call(type, data = {}) {
+    if (busy) return;
+    busy = true;
+    try {
+        // [JS-010] api｜来源：本项目 static/index.html 的<script>中定义，api异步函数
+        // 功能：通过fetch请求后端并解析JSON。
+        // 参数 path='/api/rpc'：接口路径，例如/api/state
+        // 参数 opts={method:'POST', body:JSON.stringify({id:id(), type, game_id:state.game_id, ply:state.ply, ...data})}：fetch选项；method为HTTP方法，body为已序列化JSON文本；省略默认{}
+        // 返回：Promise，成功时得到响应对象/列表。
+        // [JS-011] JSON.stringify｜来源：JavaScript内置JSON.stringify
+        // 功能：把对象序列化成JSON文本。
+        // 参数 value={id:id(), type, game_id:state.game_id, ply:state.ply, ...data}：请求对象、待执行计划或导出的棋谱对象
+        // 返回：JSON字符串。
+        // [JS-012] id｜来源：本项目 static/index.html 的<script>中定义，id函数
+        // 功能：生成本次RPC的唯一编号。
+        // 参数 本次没有显式参数；省略的可选参数使用默认值
+        // 返回：UUID字符串或备用随机编号。
+        const out = await api('/api/rpc', {method:'POST', body:JSON.stringify({id:id(), type, game_id:state.game_id, ply:state.ply, ...data})});
+        // [JS-013] Error｜来源：JavaScript内置Error
+        // 功能：创建异常对象；配合throw抛出。
+        // 参数 message=out.error：HTTP状态或后端错误说明
+        // 返回：Error对象。
+        if (!out.ok) throw Error(out.error);
+        // [JS-014] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+        // 功能：按id取得页面元素。
+        // 参数 id='error'：HTML元素id；例如board棋盘、token令牌框、error错误区
+        // 返回：DOM元素或null。
+        $('error').textContent = '';
+        selected = null;
+        // [JS-015] refresh｜来源：本项目 static/index.html 的<script>中定义，refresh异步函数
+        // 功能：查询状态与合法走法并调用render。
+        // 参数 本次没有显式参数；省略的可选参数使用默认值
+        // 返回：Promise<void>；失败会拒绝。
+        await refresh()
+    } catch (e) {
+        // [JS-016] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+        // 功能：按id取得页面元素。
+        // 参数 id='error'：HTML元素id；例如board棋盘、token令牌框、error错误区
+        // 返回：DOM元素或null。
+        $('error').textContent = e.message
+    } finally {
+        busy = false
+    }
+}
+
+/** 功能：行列转ICCS格点；参数r：0..9的行；c：0..8的列；返回：例如b2；公式与board.py一致。 */
+function sq(r, c) {
+    // [JS-017] String.fromCharCode｜来源：JavaScript内置String.fromCharCode
+    // 功能：将UTF-16码元转成字符；97+c得到a..i。
+    // 参数 num=97 + c：字符码值，此处为97加列号
+    // 返回：单字符字符串。
+    return String.fromCharCode(97 + c) + (9 - r)
+}
+
+/** 功能：根据state/selected/legal重画棋盘、状态、棋钟、历史和计划；参数：无；返回：无。 */
+function render() {
+    /** 功能：把棋子转为Map条目；参数p：{piece,row,col}；返回：["行,列",棋码]。 */
+    // [JS-018] Map｜来源：JavaScript内置Map构造器
+    // 功能：建立棋盘位置到棋子编码的映射，供渲染快速查找。
+    // 参数 iterable=(state.pieces || []).map(p => [p.row + ',' + p.col, p.piece])：由[键,值]条目组成的数组，键为"row,col"、值为棋码
+    // 返回：Map对象。
+    // [JS-019] (state.pieces || []).map｜来源：JavaScript内置Array.prototype.map
+    // 功能：遍历数组，将回调结果组成新数组。
+    // 参数 callback=p => [p.row + ',' + p.col, p.piece]：转换回调：p为棋子对象；或h为棋谱记录、i为从0开始的索引；回调功能见紧邻说明
+    // 返回：新数组，不原地替换原数组。
+    let pieces = new Map((state.pieces || []).map(p => [p.row + ',' + p.col, p.piece]));
+    // [JS-020] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+    // 功能：按id取得页面元素。
+    // 参数 id='board'：HTML元素id；例如board棋盘、token令牌框、error错误区
+    // 返回：DOM元素或null。
+    // [JS-021] $('board').replaceChildren｜来源：浏览器DOM API：Element.replaceChildren
+    // 功能：替换元素全部子节点；此处无参数，表示清空旧棋盘。
+    // 参数 本次没有显式参数；省略的可选参数使用默认值
+    // 返回：undefined。
+    $('board').replaceChildren();
+    for (let r = 0; r < 10; r++) for (let c = 0; c < 9; c++) {
+        // [JS-022] document.createElement｜来源：浏览器DOM API：Document.createElement
+        // 功能：创建尚未插入页面的元素。
+        // 参数 localName='button'：标签名；button创建棋格按钮，a创建下载链接
+        // 返回：新Element。
+        // [JS-023] pieces.get｜来源：JavaScript内置Map.prototype.get
+        // 功能：按row,col字符串取得该点棋码。
+        // 参数 key=r + ',' + c：与构建Map时一致的位置键
+        // 返回：棋码或undefined，undefined表示空点。
+        // [JS-024] sq｜来源：本项目 static/index.html 的<script>中定义，sq函数
+        // 功能：把网页row/col转换为ICCS格点。
+        // 参数 r=r：row行号0..9，上黑下红
+        // 参数 c=c：col列号0..8，从左到右
+        // 返回：例如b2的两字符字符串。
+        let b = document.createElement('button'), p = pieces.get(r + ',' + c), s = sq(r, c);
+        // [JS-025] p.toUpperCase｜来源：JavaScript内置String.prototype.toUpperCase
+        // 功能：返回大写文本；用于判断棋码是否属于红方。
+        // 参数 本次没有显式参数；省略的可选参数使用默认值
+        // 返回：新字符串。
+        // [JS-026] legal.includes｜来源：JavaScript内置Array.prototype.includes
+        // 功能：检查当前四字符走法是否在合法列表中。
+        // 参数 searchElement=selected + s：起点selected与终点s拼成的ICCS一步
+        // 返回：true/false。
+        b.className = 'cell' + (p && p === p.toUpperCase() ? ' red' : '') + (selected === s ? ' sel' : '') + (selected && legal.includes(selected + s) ? ' legal' : '');
+        b.textContent = p ? names[p] : '·';
+        b.title = `row=${r}, col=${c} / ${s}`;
+        /** 功能：虚拟人的READY回合选点或走棋；参数：无，使用闭包中的s；返回：无。 */
+        b.onclick = () => {
+            if (state.mode !== 'virtual' || state.phase !== 'READY' || state.turn === state.ai_side) return;
+            // [JS-027] legal.includes｜来源：JavaScript内置Array.prototype.includes
+            // 功能：检查当前四字符走法是否在合法列表中。
+            // 参数 searchElement=selected + s：起点selected与终点s拼成的ICCS一步
+            // 返回：true/false。
+            if (selected && legal.includes(selected + s)) {
+                // [JS-028] call｜来源：本项目 static/index.html 的<script>中定义，call异步函数
+                // 功能：提交棋局动作，带上id/game_id/ply，处理错误并刷新。
+                // 参数 type='human_move'：new/ai/undo/human_move等动作类型
+                // 参数 data={move:selected + s}：本动作额外字段；move是ICCS，ms是毫秒，count是悔棋半回合数；新局含mode/ai_side/board_confirmed/可选fen
+                // 返回：Promise<void>。
+                call('human_move', {move:selected + s});
+                selected = null
+            } else selected = s;
+            // [JS-029] render｜来源：本项目 static/index.html 的<script>中定义，render函数
+            // 功能：按state、legal和selected重新生成90格及侧栏。
+            // 参数 本次没有显式参数；省略的可选参数使用默认值
+            // 返回：undefined。
+            render()
+        };
+        // [JS-030] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+        // 功能：按id取得页面元素。
+        // 参数 id='board'：HTML元素id；例如board棋盘、token令牌框、error错误区
+        // 返回：DOM元素或null。
+        // [JS-031] $('board').append｜来源：浏览器DOM API：Element.append
+        // 功能：将新建棋格加入board元素。
+        // 参数 node=b：准备插入的棋格button元素
+        // 返回：undefined。
+        $('board').append(b)
+    }
+    // [JS-032] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+    // 功能：按id取得页面元素。
+    // 参数 id='status'：HTML元素id；例如board棋盘、token令牌框、error错误区
+    // 返回：DOM元素或null。
+    $('status').textContent = `状态 ${state.phase} · ${state.turn==='w'?'红方':'黑方'}行棋 · 第 ${state.ply||0} 半回合`;
+    // [JS-033] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+    // 功能：按id取得页面元素。
+    // 参数 id='engine'：HTML元素id；例如board棋盘、token令牌框、error错误区
+    // 返回：DOM元素或null。
+    $('engine').textContent = '引擎 ' + (state.engine || '');
+    // [JS-034] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+    // 功能：按id取得页面元素。
+    // 参数 id='clock'：HTML元素id；例如board棋盘、token令牌框、error错误区
+    // 返回：DOM元素或null。
+    // [JS-035] state.clocks.w.toFixed｜来源：JavaScript内置Number.prototype.toFixed
+    // 功能：把秒数格式化为指定小数位的文字，只影响显示。
+    // 参数 digits=1：小数位数，此处1表示保留一位
+    // 返回：字符串。
+    // [JS-036] state.clocks.b.toFixed｜来源：JavaScript内置Number.prototype.toFixed
+    // 功能：把秒数格式化为指定小数位的文字，只影响显示。
+    // 参数 digits=1：小数位数，此处1表示保留一位
+    // 返回：字符串。
+    $('clock').textContent = state.clocks ? `红 ${state.clocks.w.toFixed(1)} 秒 / 黑 ${state.clocks.b.toFixed(1)} 秒` : '';
+    /** 功能：生成一条棋谱文字；参数h：棋谱记录；i：从0开始的索引；返回：中文文字加ICCS。 */
+    // [JS-037] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+    // 功能：按id取得页面元素。
+    // 参数 id='hist'：HTML元素id；例如board棋盘、token令牌框、error错误区
+    // 返回：DOM元素或null。
+    // [JS-038] (state.history || []).map｜来源：JavaScript内置Array.prototype.map
+    // 功能：遍历数组，将回调结果组成新数组。
+    // 参数 callback=(h, i) => `${i+1}. ${h.text} [${h.uci}]`：转换回调：p为棋子对象；或h为棋谱记录、i为从0开始的索引；回调功能见紧邻说明
+    // 返回：新数组，不原地替换原数组。
+    // [JS-039] (state.history || []).map((h, i) => `${i+1}. ${h.text} [${h.uci}]`).join｜来源：JavaScript内置Array.prototype.join
+    // 功能：把各条棋谱文字连接为一个字符串。
+    // 参数 separator=' '：记录间分隔符，此处为全角空格
+    // 返回：字符串。
+    $('hist').textContent = (state.history || []).map((h, i) => `${i+1}. ${h.text} [${h.uci}]`).join('　');
+    // [JS-040] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+    // 功能：按id取得页面元素。
+    // 参数 id='pending'：HTML元素id；例如board棋盘、token令牌框、error错误区
+    // 返回：DOM元素或null。
+    // [JS-041] JSON.stringify｜来源：JavaScript内置JSON.stringify
+    // 功能：把对象序列化成JSON文本。
+    // 参数 value=state.pending：请求对象、待执行计划或导出的棋谱对象
+    // 参数 replacer=null：null表示不额外筛选/替换字段
+    // 参数 space=2：格式化缩进宽度；此处2，省略时为紧凑格式
+    // 返回：JSON字符串。
+    $('pending').textContent = state.pending ? JSON.stringify(state.pending, null, 2) : state.error || '无';
+}
+
+/** 功能：依次获取正式状态和合法走法，再重画；参数：无；返回：Promise<void>；网络异常向上传递。 */
+async function refresh() {
+    // [JS-042] api｜来源：本项目 static/index.html 的<script>中定义，api异步函数
+    // 功能：通过fetch请求后端并解析JSON。
+    // 参数 path='/api/state'：接口路径，例如/api/state
+    // 返回：Promise，成功时得到响应对象/列表。
+    state = await api('/api/state');
+    // [JS-043] api｜来源：本项目 static/index.html 的<script>中定义，api异步函数
+    // 功能：通过fetch请求后端并解析JSON。
+    // 参数 path='/api/legal'：接口路径，例如/api/state
+    // 返回：Promise，成功时得到响应对象/列表。
+    legal = await api('/api/legal');
+    // [JS-044] render｜来源：本项目 static/index.html 的<script>中定义，render函数
+    // 功能：按state、legal和selected重新生成90格及侧栏。
+    // 参数 本次没有显式参数；省略的可选参数使用默认值
+    // 返回：undefined。
+    render()
+}
+
+/** 功能：读取模式、AI阵营、确认和可选FEN，创建新局；参数：无；返回：call的Promise。 */
+// [JS-045] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='new'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+// [JS-046] call｜来源：本项目 static/index.html 的<script>中定义，call异步函数
+// 功能：提交棋局动作，带上id/game_id/ply，处理错误并刷新。
+// 参数 type='new'：new/ai/undo/human_move等动作类型
+// 参数 data={mode:$('mode').value, ai_side:$('side').value, board_confirmed:$('confirmed').checked, ...($('fen').value.trim() ? {fen:$('fen').value.trim()} : {})}：本动作额外字段；move是ICCS，ms是毫秒，count是悔棋半回合数；新局含mode/ai_side/board_confirmed/可选fen
+// 返回：Promise<void>。
+// [JS-047] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='mode'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+// [JS-048] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='side'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+// [JS-049] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='confirmed'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+// [JS-050] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='fen'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+// [JS-051] $('fen').value.trim｜来源：JavaScript内置String.prototype.trim
+// 功能：移除FEN输入首尾空白，以判断是否填写了自定义局面。
+// 参数 本次没有显式参数；省略的可选参数使用默认值
+// 返回：新字符串。
+// [JS-052] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='fen'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+// [JS-053] $('fen').value.trim｜来源：JavaScript内置String.prototype.trim
+// 功能：移除FEN输入首尾空白，以判断是否填写了自定义局面。
+// 参数 本次没有显式参数；省略的可选参数使用默认值
+// 返回：新字符串。
+$('new').onclick = () => call('new', {mode:$('mode').value, ai_side:$('side').value, board_confirmed:$('confirmed').checked, ...($('fen').value.trim() ? {fen:$('fen').value.trim()} : {})}); // 绑定新建按钮。
+/** 功能：请求AI一步；参数：无，ms从时长控件读取；返回：call的Promise。 */
+// [JS-054] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='ai'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+// [JS-055] call｜来源：本项目 static/index.html 的<script>中定义，call异步函数
+// 功能：提交棋局动作，带上id/game_id/ply，处理错误并刷新。
+// 参数 type='ai'：new/ai/undo/human_move等动作类型
+// 参数 data={ms:Number($('ms').value)}：本动作额外字段；move是ICCS，ms是毫秒，count是悔棋半回合数；新局含mode/ai_side/board_confirmed/可选fen
+// 返回：Promise<void>。
+// [JS-056] Number｜来源：JavaScript内置Number函数
+// 功能：把下拉框里的数字文本转成数值。
+// 参数 value=$('ms').value：搜索毫秒数字符串，例如1000
+// 返回：number；无法转换时可能为NaN。
+// [JS-057] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='ms'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+$('ai').onclick = () => call('ai', {ms:Number($('ms').value)}); // 实机模式只产生待执行计划。
+/** 功能：虚拟悔棋两步；参数：无；返回：call的Promise。 */
+// [JS-058] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='undo'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+// [JS-059] call｜来源：本项目 static/index.html 的<script>中定义，call异步函数
+// 功能：提交棋局动作，带上id/game_id/ply，处理错误并刷新。
+// 参数 type='undo'：new/ai/undo/human_move等动作类型
+// 参数 data={count:2}：本动作额外字段；move是ICCS，ms是毫秒，count是悔棋半回合数；新局含mode/ai_side/board_confirmed/可选fen
+// 返回：Promise<void>。
+$('undo').onclick = () => call('undo', {count:2}); // count是半回合数，不足两步会报错。
+/** 功能：获取棋谱并生成下载，随后释放临时URL；参数：无；返回：Promise<void>；失败显示错误。 */
+// [JS-060] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='export'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+$('export').onclick = async () => {
+    try {
+        // [JS-061] api｜来源：本项目 static/index.html 的<script>中定义，api异步函数
+        // 功能：通过fetch请求后端并解析JSON。
+        // 参数 path='/api/export'：接口路径，例如/api/state
+        // 返回：Promise，成功时得到响应对象/列表。
+        // [JS-062] URL.createObjectURL｜来源：浏览器URL API：URL.createObjectURL
+        // 功能：给Blob建立临时下载地址。
+        // 参数 object=new Blob([JSON.stringify(out, null, 2)], {type:'application/json'})：装有JSON文本的Blob
+        // 返回：blob:开头的URL字符串。
+        // [JS-063] Blob｜来源：浏览器File API：Blob构造器
+        // 功能：把导出的JSON文本包装成可下载的二进制数据对象。
+        // 参数 blobParts=[JSON.stringify(out, null, 2)]：组成文件内容的片段数组，此处只有一段JSON字符串
+        // 参数 options={type:'application/json'}：type是媒体类型，此处application/json
+        // 返回：Blob对象。
+        // [JS-064] JSON.stringify｜来源：JavaScript内置JSON.stringify
+        // 功能：把对象序列化成JSON文本。
+        // 参数 value=out：请求对象、待执行计划或导出的棋谱对象
+        // 参数 replacer=null：null表示不额外筛选/替换字段
+        // 参数 space=2：格式化缩进宽度；此处2，省略时为紧凑格式
+        // 返回：JSON字符串。
+        // [JS-065] document.createElement｜来源：浏览器DOM API：Document.createElement
+        // 功能：创建尚未插入页面的元素。
+        // 参数 localName='a'：标签名；button创建棋格按钮，a创建下载链接
+        // 返回：新Element。
+        let out = await api('/api/export'), u = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], {type:'application/json'})), a = document.createElement('a');
+        a.href = u;
+        a.download = 'xiangqi-game.json';
+        // [JS-066] a.click｜来源：浏览器DOM API：HTMLElement.click
+        // 功能：触发临时a元素的点击，启动浏览器下载。
+        // 参数 本次没有显式参数；省略的可选参数使用默认值
+        // 返回：undefined。
+        a.click();
+        // [JS-067] URL.revokeObjectURL｜来源：浏览器URL API：URL.revokeObjectURL
+        // 功能：释放前面创建的临时下载URL。
+        // 参数 url=u：createObjectURL返回的同一地址
+        // 返回：undefined。
+        URL.revokeObjectURL(u)
+    } catch (e) {
+        // [JS-068] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+        // 功能：按id取得页面元素。
+        // 参数 id='error'：HTML元素id；例如board棋盘、token令牌框、error错误区
+        // 返回：DOM元素或null。
+        $('error').textContent = e.message
+    }
+}; // 绑定导出按钮。
+/** 功能：空闲时定时刷新；参数：无；catch参数e为异常，显示e.message；返回：无。 */
+// [JS-069] setInterval｜来源：浏览器定时器API：全局setInterval
+// 功能：周期执行回调；只安排定时器，不会等待异步refresh完成。
+// 参数 callback=() => {if (!busy) refresh().catch(e => $('error').textContent = e.message)}：每次触发时执行的函数，此处仅busy为false时刷新
+// 参数 delay=1000：触发间隔毫秒数，此处1000，不是秒
+// 返回：定时器编号。
+// [JS-070] refresh｜来源：本项目 static/index.html 的<script>中定义，refresh异步函数
+// 功能：查询状态与合法走法并调用render。
+// 参数 本次没有显式参数；省略的可选参数使用默认值
+// 返回：Promise<void>；失败会拒绝。
+// [JS-071] refresh().catch｜来源：JavaScript内置Promise.prototype.catch
+// 功能：登记异步失败处理回调。
+// 参数 onRejected=e => $('error').textContent = e.message：失败回调，e是异常对象；此处把e.message显示在error元素
+// 返回：新的Promise；这里没有显式使用返回值。
+// [JS-072] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='error'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+setInterval(() => {if (!busy) refresh().catch(e => $('error').textContent = e.message)}, 1000); // 每1000毫秒刷新，不自动让AI走棋。
+/** 功能：显示首次刷新失败原因；参数e：刷新异常；返回：赋值后的错误文字。 */
+// [JS-073] refresh｜来源：本项目 static/index.html 的<script>中定义，refresh异步函数
+// 功能：查询状态与合法走法并调用render。
+// 参数 本次没有显式参数；省略的可选参数使用默认值
+// 返回：Promise<void>；失败会拒绝。
+// [JS-074] refresh().catch｜来源：JavaScript内置Promise.prototype.catch
+// 功能：登记异步失败处理回调。
+// 参数 onRejected=e => $('error').textContent = e.message：失败回调，e是异常对象；此处把e.message显示在error元素
+// 返回：新的Promise；这里没有显式使用返回值。
+// [JS-075] $｜来源：本项目 static/index.html 的<script>中定义，$箭头函数
+// 功能：按id取得页面元素。
+// 参数 id='error'：HTML元素id；例如board棋盘、token令牌框、error错误区
+// 返回：DOM元素或null。
+refresh().catch(e => $('error').textContent = e.message); // 页面载入后立即获取数据。
+</script> <!-- 脚本结束。 -->
+</html> <!-- 页面结束。 -->
