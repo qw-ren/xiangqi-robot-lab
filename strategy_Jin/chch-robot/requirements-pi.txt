@@ -1,0 +1,10 @@
+# 树莓派64位系统依赖；Arm_Lib由对应DOFBOT型号的厂商驱动提供。
+Flask==3.1.3
+flask-cors==6.0.5
+cchess==1.25.5
+numpy
+opencv-python
+onnxruntime
+pandas
+pyserial==3.5
+gpiozero

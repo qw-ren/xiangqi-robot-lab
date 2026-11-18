@@ -1,0 +1,165 @@
+{
+  "turn": "w",
+  "pieces": [
+    {
+      "piece": "r",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "piece": "n",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "piece": "b",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "piece": "a",
+      "row": 0,
+      "col": 3
+    },
+    {
+      "piece": "k",
+      "row": 0,
+      "col": 4
+    },
+    {
+      "piece": "a",
+      "row": 0,
+      "col": 5
+    },
+    {
+      "piece": "b",
+      "row": 0,
+      "col": 6
+    },
+    {
+      "piece": "n",
+      "row": 0,
+      "col": 7
+    },
+    {
+      "piece": "r",
+      "row": 0,
+      "col": 8
+    },
+    {
+      "piece": "c",
+      "row": 2,
+      "col": 1
+    },
+    {
+      "piece": "c",
+      "row": 2,
+      "col": 7
+    },
+    {
+      "piece": "p",
+      "row": 3,
+      "col": 0
+    },
+    {
+      "piece": "p",
+      "row": 3,
+      "col": 2
+    },
+    {
+      "piece": "p",
+      "row": 3,
+      "col": 4
+    },
+    {
+      "piece": "p",
+      "row": 3,
+      "col": 6
+    },
+    {
+      "piece": "p",
+      "row": 3,
+      "col": 8
+    },
+    {
+      "piece": "P",
+      "row": 6,
+      "col": 0
+    },
+    {
+      "piece": "P",
+      "row": 6,
+      "col": 2
+    },
+    {
+      "piece": "P",
+      "row": 6,
+      "col": 4
+    },
+    {
+      "piece": "P",
+      "row": 6,
+      "col": 6
+    },
+    {
+      "piece": "P",
+      "row": 6,
+      "col": 8
+    },
+    {
+      "piece": "C",
+      "row": 7,
+      "col": 1
+    },
+    {
+      "piece": "C",
+      "row": 7,
+      "col": 7
+    },
+    {
+      "piece": "R",
+      "row": 9,
+      "col": 0
+    },
+    {
+      "piece": "N",
+      "row": 9,
+      "col": 1
+    },
+    {
+      "piece": "B",
+      "row": 9,
+      "col": 2
+    },
+    {
+      "piece": "A",
+      "row": 9,
+      "col": 3
+    },
+    {
+      "piece": "K",
+      "row": 9,
+      "col": 4
+    },
+    {
+      "piece": "A",
+      "row": 9,
+      "col": 5
+    },
+    {
+      "piece": "B",
+      "row": 9,
+      "col": 6
+    },
+    {
+      "piece": "N",
+      "row": 9,
+      "col": 7
+    },
+    {
+      "piece": "R",
+      "row": 9,
+      "col": 8
+    }
+  ]
+}
