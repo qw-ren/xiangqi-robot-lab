@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>中国象棋 Web 识别对弈台</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="header">
+            <div class="brand">
+                <span class="brand-mark">棋</span>
+                <div>
+                    <h1>中国象棋 Web 识别对弈台</h1>
+                    <p>真实棋盘识别 · AI 决策 · 对局状态监控</p>
+                </div>
+            </div>
+            <div class="status-bar">
+                <span id="connection-status" class="status-indicator disconnected">● 未连接</span>
+                <span id="game-status" class="game-status">等待开始</span>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <aside class="control-panel panel">
+                <section class="panel-section">
+                    <h2>对局控制</h2>
+                    <div class="field-stack">
+                        <label for="ai-color">程序执色</label>
+                        <select id="ai-color">
+                            <option value="black">黑方</option>
+                            <option value="red">红方</option>
+                        </select>
+                    </div>
+                    <div class="field-stack">
+                        <label for="first-player">先手方</label>
+                        <select id="first-player">
+                            <option value="red">红方先手</option>
+                            <option value="black">黑方先手</option>
+                        </select>
+                    </div>
+                    <div class="control-buttons">
+                        <button id="btn-start-hardware-game" class="btn btn-primary btn-large">开始 DOFBOT 对局</button>
+                        <button id="btn-start-simulation-game" class="btn btn-secondary btn-large">模拟测试（无下位机）</button>
+                        <button id="btn-reset-game" class="btn btn-warning btn-large">重置游戏</button>
+                    </div>
+                </section>
+
+                <section class="panel-section">
+                    <h2>DOFBOT 连接与动作</h2>
+                    <p id="dofbot-status" role="status">正在查询机械臂后端…</p>
+                    <div class="control-buttons">
+                        <button id="btn-dofbot-connect" class="btn btn-secondary">连接 DOFBOT（不运动）</button>
+                        <button id="btn-dofbot-angles" class="btn btn-secondary">读取六轴角度</button>
+                        <button id="btn-dofbot-park" class="btn btn-warning">回停靠点（会运动）</button>
+                        <button id="btn-dofbot-stop" class="btn btn-danger">软件停止／结束对局</button>
+                        <button id="btn-dofbot-clear" class="btn btn-secondary">检查后解除故障</button>
+                        <button id="btn-slots-clear" class="btn btn-secondary">确认吃子槽位已清空</button>
+                    </div>
+                    <p class="help-text">软件停止不会切断舵机电源。实体运动前请在实机标定；电脑默认为 MOCK 预演。</p>
+                    <div class="field-stack"><label for="preview-move">动作预演走法（例如 b2e2）</label><input id="preview-move" value="b2e2" maxlength="4"></div>
+                    <button id="btn-simulate-move" class="btn btn-secondary">预演当前走法（不运动）</button>
+                    <button id="btn-test-sequence" class="btn btn-secondary">测试模拟搬运序列</button>
+                    <pre id="robot-trace" class="trace-output">尚未预演</pre>
+                    <details><summary>姿态标定与参数</summary>
+                        <p class="help-text">内部键为 col,row。row=0 为黑方底线；park 为停靠点；capture:0 为第一个吃子槽。先通过厂商工具摆好姿态，再读取示教。模拟角度表不能用于真机。</p>
+                        <div class="field-stack"><label for="teach-key">示教目标</label><input id="teach-key" value="0,0"></div>
+                        <div class="field-stack"><label for="teach-level">高度</label><select id="teach-level"><option value="above">above：棋格上方</option><option value="down">down：取放高度</option></select></div>
+                        <button id="btn-teach" class="btn btn-secondary">读取并记录当前姿态（不运动）</button>
+                        <button id="btn-calibration-load" class="btn btn-secondary">读取标定文件</button>
+                        <label for="calibration-json">标定 JSON</label><textarea id="calibration-json" rows="10" spellcheck="false"></textarea>
+                        <button id="btn-calibration-save" class="btn btn-warning">保存标定参数</button>
+                    </details>
+                </section>
+
+                <section class="panel-section">
+                    <h2>AI 设置</h2>
+                    <div class="field-stack">
+                        <label for="ai-depth">搜索深度</label>
+                        <input type="number" id="ai-depth" value="8" min="1" max="30">
+                    </div>
+                    <button id="btn-ai-move" class="btn btn-success">获取 AI 走法</button>
+                </section>
+
+                <section class="panel-section source-section">
+                    <h2>画面输入</h2>
+                    <div class="field-stack">
+                        <label for="input-source">输入源</label>
+                        <select id="input-source" onchange="changeInputSource()">
+                            <option value="virtual">虚拟棋盘（不使用摄像头）</option>
+                            <option value="camera:0">USB 摄像头（索引 0）</option>
+                            <option value="network">网络摄像头</option>
+                            <option value="local">本地图片</option>
+                        </select>
+                    </div>
+                    <div id="network-camera-input" class="input-group" style="display: none;">
+                        <input type="text" id="network-camera-url" placeholder="http://192.168.1.23:8080 或 rtsp://192.168.1.23:8554/cam">
+                        <button id="btn-connect-network" class="btn btn-secondary">连接</button>
+                        <button id="btn-disconnect-network" class="btn btn-secondary">断开</button>
+                    </div>
+                    <div id="local-image-input" class="input-group" style="display: none;">
+                        <input type="file" id="local-image-file" accept="image/*" onchange="handleLocalImageUpload(event)">
+                    </div>
+                    <button id="btn-refresh-cameras" class="btn btn-secondary">扫描／刷新摄像头</button>
+                    <button id="btn-camera-check" class="btn btn-secondary">检查摄像头</button>
+                </section>
+            </aside>
+
+            <section class="vision-panel">
+                <article class="panel camera-section">
+                    <div class="section-heading">
+                        <div>
+                            <h2>真实画面</h2>
+                            <p id="camera-preview-status" role="status">正在检测可用摄像头…</p>
+                        </div>
+                        <span class="live-chip">CAMERA</span>
+                    </div>
+                    <div class="camera-container">
+                        <img id="camera-feed" src="" alt="摄像头画面" style="display: none;">
+                        <canvas id="camera-view" width="640" height="480"></canvas>
+                        <canvas id="board-canvas" width="450" height="500"></canvas>
+                    </div>
+                    <div class="visible-controls">
+                        <button id="btn-capture" class="btn btn-secondary">捕获图像</button>
+                        <button id="btn-recognize" class="btn btn-success">开始识别</button>
+                    </div>
+                </article>
+
+                <article class="panel virtual-section">
+                    <div class="section-heading">
+                        <div>
+                            <h2>虚拟识别画面</h2>
+                            <p>识别后的棋盘状态会同步在这里</p>
+                        </div>
+                        <div class="piece-counter">
+                            <span>棋子数量</span>
+                            <strong id="piece-count">0</strong>
+                        </div>
+                    </div>
+                    <input type="text" id="fen-display" readonly aria-label="FEN" title="当前正式局面的 FEN">
+                    <div class="visible-controls"><button id="btn-copy-fen" class="btn btn-secondary">复制 FEN</button><a class="btn btn-secondary" href="/api/game/export" download>导出棋谱与全部棋位</a></div>
+                    <div class="visual-board-container">
+                        <canvas id="visual-board" width="520" height="580"></canvas>
+                    </div>
+                </article>
+            </section>
+
+            <aside class="info-panel">
+                <section class="panel move-history">
+                    <div class="section-heading compact">
+                        <h2>走法历史</h2>
+                    </div>
+                    <div id="move-list" class="move-list"></div>
+                </section>
+
+                <section class="panel analysis-panel">
+                    <div class="section-heading compact">
+                        <h2>AI 分析</h2>
+                    </div>
+                    <div id="ai-analysis" class="analysis-content">
+                        <p>等待 AI 分析...</p>
+                    </div>
+                </section>
+
+                <section class="panel log-console">
+                    <div class="section-heading compact">
+                        <h2>系统日志</h2>
+                        <button id="btn-toggle-log-pause" class="btn btn-secondary btn-small">暂停日志</button>
+                        <button id="btn-clear-log" class="btn btn-secondary btn-small">清空</button>
+                        <button id="btn-export-log" class="btn btn-secondary btn-small">导出</button>
+                    </div>
+                    <div id="log-output" class="log-output"></div>
+                </section>
+            </aside>
+        </main>
+    </div>
+
+    <script>window.CHRO_DESKTOP_SIMULATION = {{ desktop_virtual_input|default(false)|tojson }};</script>
+    <script src="/static/js/app.js?v=camera-fix-20261117"></script>
+    <script src="/static/js/full_features.js?v=full-dofbot-20261116"></script>
+</body>
+</html>

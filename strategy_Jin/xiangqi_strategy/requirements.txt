@@ -1,0 +1,7 @@
+# Python依赖清单；用 python -m pip install -r requirements.txt 安装。
+# 中国象棋规则、局面合法性、走法生成和中文记谱；不负责AI搜索。
+cchess==1.25.5
+# 本地网页与HTTP接口。
+Flask==3.1.3
+# 双向串口读写；代码中import serial对应这个包。
+pyserial==3.5
