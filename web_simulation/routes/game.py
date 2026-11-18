@@ -10,7 +10,7 @@ bp = Blueprint("game", __name__)
 
 @bp.route("/api/game/start", methods=["POST"])
 def start_game():
-    """Start a new game, optionally homing the physical robot first."""
+    """Start a game; serial hardware mode never homes or controls the arm locally."""
     try:
         data = request.json or {}
         try:
@@ -32,6 +32,9 @@ def start_game():
         if ai_color not in ('red', 'black') or first_player not in ('red', 'black'):  # 校验选项。
             return jsonify(success=False, error='执色和先手参数无效'), 400  # 错误时不修改状态。
 
+        import uuid  # 每局命令使用独立编号。
+        _app.game_state['game_id'] = uuid.uuid4().hex
+        _app.game_state['vision_feedback'] = False  # 纯模拟不等待实体反馈。
         _app.game_state["is_game_running"] = False
         _app.game_state["robot_mode"] = robot_mode
         _app.game_state["robot_moving"] = robot_mode == _app.ROBOT_MODE_HARDWARE
@@ -43,22 +46,6 @@ def start_game():
         _app.game_state["robot_baseline_match_count"] = 0
 
         homing_result = None
-        if robot_mode == _app.ROBOT_MODE_HARDWARE:
-            homing_result = _app.send_homing_command_to_controller()
-            if not homing_result.success or not homing_result.homing_acknowledged:
-                _app.game_state["robot_moving"] = False
-                _app.game_state["vision_pause_reason"] = ""
-                return jsonify(
-                    {
-                        "success": False,
-                        "error": homing_result.error or "STM32 homing acknowledgement missing",
-                        "homing_command": homing_result.command_text,
-                        "homing_response": homing_result.response,
-                        "homing_acknowledged": False,
-                        "robot_mode": robot_mode,
-                    }
-                ), 503
-
         _app.game_state["move_history"] = []
         _app.game_state["display_history"] = []
         _app.game_state["pending_ai_move"] = None

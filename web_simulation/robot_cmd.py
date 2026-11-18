@@ -81,84 +81,18 @@ def uci_to_robot_command(uci_move, board_state=None):
 
 
 def send_robot_command_to_controller(command):
-    if not command:
-        return RobotSendResult(success=False, command_text="", error="empty robot command")
-
-    try:
-        arm_command = (
-            command if isinstance(command, RobotArmCommand) else RobotArmCommand.from_sequence(command)
-        )
-    except (TypeError, ValueError) as exc:
-        return RobotSendResult(
-            success=False,
-            command_text=format_robot_command(command),
-            error=str(exc),
-        )
-
-    from web_simulation import app as _app
-
-    command_timeout = robot_command_timeout_for_command(arm_command)
-    result = _app.get_robot_tcp_client().send_robot_command(
-        arm_command,
-        timeout=command_timeout,
-    )
-
-    target = f"{getattr(config, 'ROBOT_NETWORK_HOST', '127.0.0.1')}:{getattr(config, 'ROBOT_NETWORK_PORT', 8086)}"
-    if result.success:
-        logger.info(
-            "Robot five-value command sent to %s: %s%s, timeout=%.1fs",
-            target,
-            result.command_text,
-            f", response={result.response}" if result.response else "",
-            command_timeout,
-        )
-    else:
-        logger.warning(
-            "Robot five-value command send failed in hardware mode: %s, timeout=%.1fs, error=%s",
-            result.command_text,
-            command_timeout,
-            result.error,
-        )
-
-    return result
+    """旧 TCP 动作接口已停用；本项目只通过统一串口出口发送 ICCS 走棋消息。"""
+    return RobotSendResult(success=False, command_text='', error='TCP 运动/归零已移除，请使用走棋串口')
 
 
 def probe_robot_controller():
-    from web_simulation import app as _app
-
-    try:
-        _app.get_robot_tcp_client().connect(timeout=robot_network_timeout())
-        return RobotSendResult(success=True, command_text="", response="persistent connection ready")
-    except OSError as exc:
-        return RobotSendResult(success=False, command_text="", error=str(exc))
+    """旧 TCP 动作接口已停用；本项目只通过统一串口出口发送 ICCS 走棋消息。"""
+    return RobotSendResult(success=False, command_text='', error='TCP 运动/归零已移除，请使用走棋串口')
 
 
 def send_homing_command_to_controller():
-    from web_simulation import app as _app
-
-    command = RobotHomingCommand(
-        m1_angle_deg=getattr(config, "ROBOT_HOMING_M1_ANGLE_DEG", -17.1848),
-        m2_angle_deg=getattr(config, "ROBOT_HOMING_M2_ANGLE_DEG", -55.6304),
-    )
-    result = _app.get_robot_tcp_client().send_homing_command(
-        command,
-        timeout=getattr(config, "ROBOT_HOMING_TIMEOUT", 30.0),
-    )
-
-    if result.success:
-        logger.info(
-            "STM32 homing completed: command=%s, response=%s",
-            result.command_text,
-            result.response,
-        )
-    else:
-        logger.warning(
-            "STM32 homing failed: command=%s, response=%s, error=%s",
-            result.command_text,
-            result.response,
-            result.error,
-        )
-    return result
+    """旧 TCP 动作接口已停用；本项目只通过统一串口出口发送 ICCS 走棋消息。"""
+    return RobotSendResult(success=False, command_text='', error='TCP 运动/归零已移除，请使用走棋串口')
 
 
 def build_robot_log_messages(robot_command_text, send_result, robot_command=None):

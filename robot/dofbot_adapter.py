@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-  # 中文注释采用 UTF-8。
-"""DOFBOT 动作层：示教姿态、吃子搬运、模拟执行和软件停止。"""  # 不使用原 STM32 的五值指令。
+"""走棋串口输出和离线动作预演；本机不访问舵机、夹爪或电磁铁。"""  # 不使用原 STM32 的五值指令。
 import copy  # 隔离调用者的标定数据。
 import json  # 读写示教文件。
 import math  # 拒绝 NaN 等非法角度。
@@ -71,47 +71,105 @@ def mock_calibration():  # 生成仅供电脑预演的角度表。
 
 class DofbotController:  # 将硬件访问与棋局逻辑隔离。
     def __init__(self, backend='mock', calibration_path='data/dofbot_calibration.json', device_factory=None, sleeper=time.sleep):  # 测试可注入假设备。
-        self.backend = backend  # mock 不导入 Arm_Lib。
+        self.backend = 'serial' if backend == 'dofbot' else backend  # 旧参数仅作为串口后端别名。
+        if self.backend not in ('mock', 'serial'):
+            raise ValueError('backend 只能为 mock 或 serial')
+        self.serial_port = None  # pyserial 对象；只有显式连接时才打开。
+        self.last_payload = None  # 最近一次发送的棋盘级消息。
+        self.attempted = set()  # 已尝试的 command_id，异常也不自动重发。
         self.path = Path(calibration_path)  # 真机示教文件。
         self.device_factory = device_factory  # 单元测试注入点。
         self.sleep = sleeper  # 真机使用真实等待。
-        self.arm = None  # 连接时才创建设备。
-        self.magnet = None  # 电磁铁 GPIO 对象按需创建。
         self.connected = False  # 连接状态独立于对局。
         self.busy = False  # 阻止并发动作。
         self.fault = ''  # 失败后锁定，防止自动重发。
         self.stop_event = threading.Event()  # 下一段指令前检查停止。
         self.lock = threading.RLock()  # 标定、读取和动作共用锁。
         self.capture_index = 0  # 每次吃子后占用一个独立槽位。
-        self.slots_confirmed = backend == 'mock'  # 真机每次启动都需要人工确认收纳区已清空。
+        self.slots_confirmed = self.backend == 'mock'  # 真机每次启动都需要人工确认收纳区已清空。
         self.trace = []  # 保存最近一次动作预演。
-        self.calibration = validate_calibration(json.loads(self.path.read_text(encoding='utf-8'))) if self.path.is_file() else (mock_calibration() if backend == 'mock' else dict(cells={}, capture_slots=[]))  # 未标定的真机不填假角度。
+        self.calibration = (validate_calibration(json.loads(self.path.read_text(encoding='utf-8')))
+                            if self.path.is_file() else mock_calibration()) if self.backend == 'mock' else dict(cells={}, capture_slots=[])  # 串口不读取或依赖实机角度标定。
 
-    def connect(self):  # 连接仅检测通信，绝不归零。
-        with self.lock:  # 防止重复创建设备。
-            if self.backend == 'mock':  # 本机调试无需硬件库。
-                self.connected = True  # 标记模拟连接成功。
-            else:  # 树莓派直接访问扩展板。
-                if self.arm is None:  # 已连接时复用对象。
-                    if self.device_factory is None:  # 实际运行使用官方库。
-                        from Arm_Lib import Arm_Device  # Windows 无库时给出导入错误。
-                        self.device_factory = Arm_Device  # 保存构造器。
-                    self.arm = self.device_factory()  # 仅创建通信对象。
-                self.read_angles()  # 必须能读到六轴反馈。
-                self.connected = True  # 反馈成功才算连接。
-            return self.status()  # 前端显示实际类型。
+    def connect(self, port=None, baud=None):
+        """功能：打开走棋串口；port 是 COM3 或 /dev/ttyUSB0；baud 是波特率。
 
-    def read_angles(self):  # 只读关节角度，用于示教。
-        if self.busy:  # 搬运时不允许并发读写。
-            raise ValueError('机械臂忙，请等待动作完成')  # 减少总线冲突。
-        if self.backend == 'mock':  # 模拟固定姿态。
-            return [90, 90, 90, 90, 90, 60]  # 不冒充实际反馈。
-        if self.arm is None:  # 未建立对象。
-            raise ValueError('请先连接 DOFBOT')  # 不在读取时自动运动。
-        values = [self.arm.Arm_serial_servo_read(i) for i in range(1, 7)]  # 官方六轴读取接口。
-        return validate_pose(values)  # None 或总线错误不能算连接成功。
+        来源：pyserial.Serial；timeout/write_timeout 单位为秒。mock 仅建立模拟连接。
+        连接本身不发送走棋、归零、角度或末端工具命令。
+        """
+        with self.lock:
+            if self.backend == 'mock':
+                self.connected = True
+            else:
+                import config
+                import serial
+                port = port or getattr(config, 'ROBOT_SERIAL_PORT', '')
+                baud = int(baud or getattr(config, 'ROBOT_SERIAL_BAUD', 115200))
+                if not isinstance(port, str) or not port.strip() or baud <= 0:
+                    raise ValueError('请填写串口名和正数波特率')
+                if self.serial_port is not None and self.serial_port.is_open:
+                    if self.serial_port.port == port and self.serial_port.baudrate == baud:
+                        return self.status()
+                    self.serial_port.close()
+                self.connected = False
+                self.serial_port = serial.Serial(port, baud, timeout=0.1, write_timeout=2)
+                self.connected = bool(self.serial_port.is_open)
+            return self.status()
+
+    def send_move(self, move, before_fen, preview, command_id, game_id, ply):
+        """功能：串口发送与网页相同的 AI 决策，返回消息字典；无动作控制。
+
+        move：ICCS 如 b2e2；before_fen：走前 FEN；preview：rules.checked_transition 返回值；
+        command_id：本步唯一编号；game_id：对局编号；ply：走前半步数。
+        json.dumps 为标准库编码，Serial.write 为 pyserial 字节写入；写入成功不等于机械臂执行成功。
+        """
+        payload = dict(type='MOVE', command_id=command_id, game_id=game_id, ply=ply,
+                       move=move, **{'from': dict(row=9-int(move[1]), col=ord(move[0])-97),
+                                    'to': dict(row=9-int(move[3]), col=ord(move[2])-97)},
+                       piece=preview['board_state'][f'{ord(move[2])-97},{9-int(move[3])}'], capture=preview['capture'],
+                       before_fen=before_fen, expected_fen=preview['fen'], pieces=preview['pieces'])
+        with self.lock:
+            if self.backend != 'serial' or not self.connected or self.serial_port is None or not self.serial_port.is_open:
+                raise ValueError('走棋串口尚未连接；本步没有发送')
+            if self.fault or self.stop_event.is_set():
+                raise ValueError(self.fault or '输出已停止')
+            if command_id in self.attempted:
+                raise ValueError('本步已经尝试发送，禁止自动重发；请由下位机按 command_id 去重')
+            wire = (json.dumps(payload, ensure_ascii=True, separators=(',', ':')) + '\n').encode('ascii')
+            self.attempted.add(command_id)
+            self.busy = True
+            try:
+                if self.serial_port.write(wire) != len(wire):
+                    raise IOError('串口发生短写，接收情况未知')
+                self.last_payload = payload
+                return payload
+            except Exception as exc:
+                self.fault = '串口发送失败（可能已部分发送，禁止自动重发）：' + str(exc)
+                self.connected = bool(self.serial_port.is_open)
+                raise
+            finally:
+                self.busy = False
+
+    def close(self):
+        """功能：关闭本进程持有的串口；无参数，不向下位机发送命令。"""
+        with self.lock:
+            if self.serial_port is not None:
+                self.serial_port.close()
+            self.connected = False
+
+    def read_angles(self):
+        """功能：保留离线预演的固定角度；无参数，串口后端不读取真实关节。"""
+        if self.backend != 'mock':
+            raise ValueError('本项目只发送如何走棋，不读取或控制机械臂关节')
+        return [90, 90, 90, 90, 90, 60]
 
     def status(self):  # 只返回页面需要的状态。
+        if self.backend == 'serial':
+            self.connected = bool(self.serial_port is not None and self.serial_port.is_open)
+            return dict(backend='serial', connected=self.connected, busy=self.busy, fault=self.fault,
+                        port=getattr(self.serial_port, 'port', ''), baud=getattr(self.serial_port, 'baudrate', None),
+                        calibrated=True, calibration_error='', capture_used=0, capture_capacity=0,
+                        slots_confirmed=True, trace=[], last_payload=self.last_payload, execution_confirmed=False)
         try:  # 完整性只作校验，不动作。
             validate_calibration(self.calibration, complete=True)  # 检查全部示教数据。
             ready = self.backend == 'mock' or not self.calibration.get('mock_only')  # 真机拒绝模拟表。
@@ -133,13 +191,15 @@ class DofbotController:  # 将硬件访问与棋局逻辑隔离。
         self.calibration = checked  # 更新内存参数。
         return self.status()  # 显示最新完整性。
 
-    def plan(self, move, board):  # 从 ICCS 走法生成完整吃子/搬运序列。
+    def plan(self, move, board):  # 仅生成离线预览，绝不发送。
         if not isinstance(move, str) or len(move) != 4 or move[0] not in 'abcdefghi' or move[2] not in 'abcdefghi' or move[1] not in '0123456789' or move[3] not in '0123456789':  # 拒绝错误坐标。
             raise ValueError('走法格式应为 b2e2')  # Pikafish 的纵坐标为 0..9。
         source, target = [f'{ord(move[i])-97},{9-int(move[i+1])}' for i in (0, 2)]  # 转为黑方在上的 col,row。
         if not board.get(source):  # 不能搬空格。
             raise ValueError('起点没有棋子')  # 由规则层先检查合法性。
         capture = bool(board.get(target))  # 先移走被吃棋子。
+        if self.backend == 'serial':
+            return dict(move=move, source=source, target=target, capture=capture, steps=[], transport='serial', preview_only=True)
         data = self.calibration  # 本次采用当前标定。
         if self.backend != 'mock' and data.get('mock_only'):  # 不允许模拟表控制硬件。
             raise ValueError('真机需要实际标定')  # 不执行假角度。
@@ -160,43 +220,29 @@ class DofbotController:  # 将硬件访问与棋局逻辑隔离。
                 steps.append(dict(label=name, angles=angles, gripping=grip))  # 前端可查看每段。
         return dict(move=move, source=source, target=target, capture=capture, steps=steps, backend=self.backend)  # 预演不改变棋局。
 
-    def execute(self, plan):  # 在 AI 工作线程里执行已校验计划。
-        with self.lock:  # 整段动作只允许一个任务。
-            if not self.connected or self.busy or self.fault:  # 故障不自动重试。
-                raise ValueError(self.fault or '请先连接机械臂，且等待空闲')  # 明确状态要求。
-            self.busy = True  # 提前占用执行权。
-            self.stop_event.clear()  # 新任务建立停止边界。
-            self.trace = []  # 记录本次实际下发段。
-            data = copy.deepcopy(self.calibration)  # 动作期间不接受参数变化。
-            try:  # 出错锁存故障。
-                if self.backend != 'mock' and data.get('end_effector') == 'magnet' and self.magnet is None:  # 惰性初始化 GPIO。
-                    from gpiozero import OutputDevice  # 仅电磁铁模式需要此依赖。
-                    self.magnet = OutputDevice(data['magnet_bcm'], active_high=data.get('magnet_active_high', True), initial_value=False)  # 引脚连接驱动板，不能直接驱动线圈。
-                for step in plan['steps']:  # 按预演顺序执行。
-                    if self.stop_event.is_set():  # 每段前检查停止请求。
-                        raise RuntimeError('已软件停止；检查实体棋盘后重建对局')  # 不再下发后续舵机命令。
-                    if self.backend != 'mock':  # 真机调用官方接口。
-                        self.arm.Arm_serial_servo_write6(*step['angles'], int(data.get('move_ms', 1000)))  # 同时写六轴。
-                        self.sleep(data.get('move_ms', 1000)/1000 + data.get('settle_s', 0.3))  # 等待预计运动时间。
-                        actual = validate_pose([self.arm.Arm_serial_servo_read(i) for i in range(1, 7)])  # 读取到位反馈。
-                        if any(abs(a-b) > data.get('tolerance_deg', 8) for a, b in zip(actual, step['angles'])):  # 未到位不继续搬运。
-                            raise RuntimeError('舵机反馈未到位，请检查卡阻、供电和标定')  # 停止后续段。
-                        if self.magnet is not None:  # 电磁铁取放在到位后切换。
-                            self.magnet.value = step['gripping']  # 控制隔离驱动电路。
-                            self.sleep(data.get('settle_s', 0.3))  # 留出吸合/释放时间。
-                    if self.stop_event.is_set():  # 即使停止发生在最后一段，也不能报告正常完成。
-                        raise RuntimeError('已软件停止；检查实体棋盘后重建对局')  # 机械臂可能停在半途。
-                    self.trace.append(copy.deepcopy(step))  # 仅记录已完成的段。
-                if plan['capture']:  # 只有成功完成搬运才占用下一槽位。
-                    self.capture_index += 1  # 不覆盖已放置棋子。
-                return True  # 这里只表示动作结束，棋局还需视觉确认。
-            except Exception as exc:  # 任何动作失败都禁止自动重发。
-                self.fault = str(exc)  # 页面显示故障来源。
-                raise  # 由上层锁住棋局。
-            finally:  # 不在异常中贸然移动或释放电磁铁。
-                self.busy = False  # 释放执行标志。
+    def execute(self, plan):
+        """功能：仅在 mock 模式记录离线预演；plan 是 plan() 生成的步骤字典。
+
+        串口后端必须通过 send_move 发送棋盘级决策，不接受关节或末端工具命令。
+        """
+        if self.backend != 'mock':
+            raise ValueError('本机机械臂动作控制已移除，请使用串口走棋消息')
+        with self.lock:
+            if not self.connected or self.busy or self.fault:
+                raise ValueError(self.fault or '请先连接空闲的模拟器')
+            self.busy = True
+            try:
+                for step in plan['steps']:
+                    if self.stop_event.is_set():
+                        raise RuntimeError('离线预演已停止')
+                    self.trace.append(copy.deepcopy(step))
+                if plan.get('capture'):
+                    self.capture_index += 1
+                return True
+            finally:
+                self.busy = False
 
     def stop(self):  # 无需等待动作锁即可接受请求。
         self.stop_event.set()  # 当前段结束后不再执行下一段。
-        self.fault = '已请求软件停止；这不会切断舵机电源'  # 不冒充物理急停。
+        self.fault = '本机已停止后续输出；已发出的消息由下位机自行处理'  # 不冒充物理急停。
         return self.status()  # 返回给网页。

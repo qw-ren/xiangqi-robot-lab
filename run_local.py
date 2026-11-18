@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-  # 中文说明采用 UTF-8。
-"""Windows/Linux 通用 CH-RO 网页入口；mock 模拟，dofbot 通过 Arm_Lib 控制。"""  # 是否连接实物由 backend 明确选择。
+"""Windows/Linux 通用 CH-RO 网页入口；mock 模拟，serial 仅发送走棋消息。"""  # 是否连接实物由 backend 明确选择。
 import argparse  # 读取端口、引擎和相机选项。
 import atexit  # 退出时清理引擎。
 import json  # 保存本机服务的停止凭据。
@@ -16,7 +16,7 @@ sys.path.insert(0, str(BASE_DIR))  # 从任意工作目录启动都能找到 CH-
 
 
 def main() -> int:  # 命令行主入口。
-    parser = argparse.ArgumentParser(description='CH-RO 完整网页：电脑模拟或树莓派 DOFBOT')  # 显示用途。
+    parser = argparse.ArgumentParser(description='CH-RO 完整网页：电脑模拟与走棋串口输出')  # 显示用途。
     parser.add_argument('--host', default='127.0.0.1')  # 默认只供本机浏览器访问。
     parser.add_argument('--port', type=int, default=5000)  # 端口可修改，网页使用相对接口地址。
     parser.add_argument('--engine', default=str(BASE_DIR / 'Pikafish' / ('pikafish.exe' if os.name == 'nt' else 'pikafish')))  # 根据当前操作系统选择文件名，目录始终以本文件为准。
@@ -31,12 +31,18 @@ def main() -> int:  # 命令行主入口。
     parser.add_argument('--aruco-config', type=Path, default=BASE_DIR / 'configs/local/board-local.json')
     parser.add_argument('--board-orientation', choices=['unknown', 'black-top', 'red-top'], default='unknown')
     parser.add_argument('--allow-approximate-geometry', action='store_true')
-    parser.add_argument('--backend', choices=['mock', 'dofbot'], default='mock')  # 默认仅预演，真机必须明确选择。
+    parser.add_argument('--backend', choices=['mock', 'serial', 'dofbot'], default='mock')  # 默认仅预演，真机必须明确选择。
+    parser.add_argument('--serial', help='走棋输出串口，如 COM3 或 /dev/ttyUSB0')
+    parser.add_argument('--baud', type=int, default=115200, help='走棋串口波特率，8N1')
     parser.add_argument('--calibration', default=None)  # 可指定参数文件；默认将模拟与实体分开保存。
     parser.add_argument('--open-browser', action='store_true')  # 供用户的一键启动脚本使用。
     args = parser.parse_args()  # 获取实际参数。
     if not 1 <= args.threads <= 32 or not 16 <= args.hash <= 4096 or not 50 <= args.ms <= 10000:  # 约束常用参数。
         parser.error('threads 需为 1..32，hash 需为 16..4096，ms 需为 50..10000')  # 防止误填造成过量资源占用。
+    if args.baud <= 0:
+        parser.error('baud 需为正整数')
+    if args.serial or args.backend == 'dofbot':
+        args.backend = 'serial'  # dofbot 旧参数也不再调用本机硬件。
     engine_path = Path(args.engine).resolve()  # 获取完整路径。
     if not engine_path.is_file() and not args.vision_only:  # 视觉预览不需要引擎。
         parser.error(f'找不到引擎：{engine_path}')  # 不启动一个无法搜索的服务。
@@ -61,7 +67,9 @@ def main() -> int:  # 命令行主入口。
     if args.vision_backend == 'aruco':
         config.CAMERA_WIDTH, config.CAMERA_HEIGHT = 1600, 1200
     config.DESKTOP_SIMULATION_ONLY = False  # 完整网页允许进入所选后端，默认仍为 mock。
-    config.ROBOT_BACKEND = args.backend  # 明确区分模拟预演与直接 Arm_Lib。
+    config.ROBOT_BACKEND = args.backend  # 实体后端只发送串口走棋消息。
+    config.ROBOT_SERIAL_PORT = args.serial or config.ROBOT_SERIAL_PORT
+    config.ROBOT_SERIAL_BAUD = args.baud
     config.DOFBOT_CALIBRATION = str(Path(args.calibration).resolve() if args.calibration else BASE_DIR / 'data' / ('mock_calibration.json' if args.backend == 'mock' else 'dofbot_calibration.json'))  # 模拟保存不能覆盖实体标定。
     config.CAMERA_INDEX = args.camera_index
     config.USE_IP_CAMERA = False  # 不连接原作者的内网相机。
@@ -69,6 +77,12 @@ def main() -> int:  # 命令行主入口。
     from flask import request, jsonify  # 处理只在本机调试入口注册的停止接口。
     from werkzeug.serving import make_server  # 允许清理后正常结束后台服务。
     web_app.app.context_processor(lambda: dict(desktop_simulation_only=False, desktop_virtual_input=not args.camera, robot_backend=args.backend))  # 展示完整操作入口。
+    if args.serial:  # 用户显式指定串口才打开；未指定时可在网页连接。
+        from web_simulation.dofbot import get_controller
+        try:
+            get_controller().connect(args.serial, args.baud)
+        except Exception as exc:
+            parser.error(f'走棋串口连接失败：{exc}')
     control_token = secrets.token_urlsafe(32)  # 不在网页或日志中显示停止凭据。
     server = make_server(args.host, args.port, web_app.app, threaded=True)  # 先绑定端口，失败时不覆盖旧凭据。
     @web_app.app.post('/api/local/stop')  # 仅本机启动器注册这个管理接口。
@@ -86,14 +100,14 @@ def main() -> int:  # 命令行主入口。
     control_path.write_text(json.dumps(dict(pid=os.getpid(), port=args.port, token=control_token)), encoding='utf-8')  # 停止脚本只访问本机。
     def cleanup() -> None:  # 关闭本进程持有的引擎。
         web_app.game_state['is_game_running'] = False  # 结束后不执行迟到的搜索结果。
-        from web_simulation.dofbot import controller  # 退出时也停止后续机械臂指令。
+        from web_simulation.dofbot import controller  # 退出时释放本机串口。
         if controller is not None:  # 可能从未点击过连接。
-            controller.stop()  # 只设停止标志，不在退出时移动或释放夹持物。
+            controller.close()  # 仅关闭本机串口，不发动作。
         if web_app.ai_engine is not None:  # 引擎可能尚未延迟启动。
             web_app.ai_engine.stop()  # 发 quit 并等待结束。
     atexit.register(cleanup)  # 正常关闭时执行清理。
     print(f'打开浏览器：http://{args.host}:{args.port}', flush=True)  # 给出访问地址。
-    print(f'机械臂后端：{args.backend}；mock 不会驱动硬件。实体模式需要现场标定和视觉确认。', flush=True)  # 防止把电脑预演当成真机连接。
+    print(f'走棋输出：{args.backend}；serial 只发棋盘级决策，mock 不发送硬件命令。', flush=True)  # 防止把电脑预演当成真机连接。
     if args.open_browser:  # 只有用户选择自动打开时执行。
         browser_host = '127.0.0.1' if args.host == '0.0.0.0' else args.host  # 监听所有网卡时仍从本机访问。
         threading.Thread(target=webbrowser.open, args=(f'http://{browser_host}:{args.port}',), daemon=True).start()  # 打开默认浏览器。

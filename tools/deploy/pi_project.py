@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """迁移包入口：检查依赖与引擎，或者启动两套项目中的一套；不自动连接或移动机械臂。"""
 import argparse  # 标准库：解释 check/start 及各个命令行参数。
-import importlib.util  # 标准库：检查 Arm_Lib 是否可以找到，不实例化设备。
 import json  # 标准库：解析子进程的检测结果。
 import os  # 标准库：检查执行权限、读取环境变量及替换当前进程。
 from pathlib import Path  # 标准库：构造跨平台绝对路径。
@@ -92,8 +91,6 @@ def check(args):
         print('[错误] 缺少项目目录；请完整解压整个包。', flush=True)
         return failures + 1
     dependencies = dict(DEPS[args.project])  # 复制依赖表，不修改其他调用的设置。
-    if args.backend == 'dofbot':  # 当前项目电磁铁通过 gpiozero 驱动；mock 不需要访问树莓派GPIO库。
-        dependencies['gpiozero'] = 'gpiozero'
     try:
         errors = import_errors(project_dir, list(dependencies))  # 独立进程导入，不启动项目服务。
         for name, error in errors.items():
@@ -109,21 +106,12 @@ def check(args):
             if not (project_dir / relative).is_file():
                 print(f'[错误] 缺少网页识别模型：{relative}', flush=True)
                 failures += 1
-    if args.backend == 'dofbot':
-        try:
-            if importlib.util.find_spec('Arm_Lib') is None:  # find_spec(name)：检查可发现性，不构造 Arm_Device。
-                raise ImportError('当前 Python 环境找不到厂商 Arm_Lib；请先安装并确认虚拟环境可见。')
-            print('[通过] 找到 Arm_Lib（未实例化设备，通信和型号兼容仍需实测）。', flush=True)
-        except (ImportError, ValueError) as exc:
-            print(f'[错误] {exc}', flush=True)
-            failures += 1
-        print('[待实测] DOFBOT 需有效的90格上下姿态、park、吃子槽位及电磁铁配置。', flush=True)
     if args.serial:
         port = Path(args.serial).expanduser()  # 串口参数是系统设备名，不相对于迁移包目录。
         if platform.system() == 'Linux' and (not port.exists() or not os.access(port, os.R_OK | os.W_OK)):
             print(f'[错误] 串口不存在或当前用户不可读写：{port}', flush=True)
             failures += 1
-        print('[提示] 串口接收 observe 后仍需控制器发起 ai/ack/done/视觉确认；不会自动驱动 Arm_Lib。', flush=True)
+        print('[提示] Web 串口只输出 AI 走棋消息；独立 strategy 保持原有协议。', flush=True)
     if not args.skip_engine:
         for label, path in (('引擎', engine), ('权重', nnue)):
             if not path.is_file():
@@ -149,7 +137,7 @@ def check(args):
         except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
             print(f'[错误] 真实引擎搜索失败：{exc}', flush=True)
             failures += 1
-    print('[范围] 本检查不验证相机识别、实际抓放或跨项目联通；完整网页尚无队友视觉串口输入。', flush=True)
+    print('[范围] 本检查不验证相机识别、实际抓放或跨项目联通；完整网页保留集成视觉；串口用于输出同一 AI 决策。', flush=True)
     print(f'检查结束：{failures} 项错误。', flush=True)
     return failures
 
@@ -163,7 +151,9 @@ def launch_command(args):
                '--port', str(args.port or (5001 if args.project == 'strategy' else 5000)),
                '--threads', str(args.threads), '--hash', str(args.hash_mb)]
     if args.project == 'web':
-        command += ['--backend', args.backend, '--ms', str(args.ms)]  # 默认 mock，不自动改成实体控制。
+        command += ['--backend', args.backend, '--ms', str(args.ms)]
+        if args.serial:
+            command += ['--serial', args.serial, '--baud', str(args.baud)]  # 默认 mock，不自动改成实体控制。
         if args.calibration:
             command += ['--calibration', str(resolve_path(args.calibration))]
     elif args.serial:
@@ -178,9 +168,9 @@ def main():
     parser.add_argument('--project', choices=list(PROJECTS), default='strategy')  # 默认按策略分工启动轻量项目。
     parser.add_argument('--engine')  # 引擎路径；相对路径以包目录为准。
     parser.add_argument('--nnue')  # 权重路径；相对路径以包目录为准。
-    parser.add_argument('--backend', choices=['mock', 'dofbot'], default='mock')  # 仅完整网页支持。
+    parser.add_argument('--backend', choices=['mock', 'serial', 'dofbot'], default='mock')  # 仅完整网页支持。
     parser.add_argument('--calibration')  # 完整网页的现场示教 JSON，不能使用模拟角度代替。
-    parser.add_argument('--serial')  # 仅策略项目支持，例如 /dev/serial/by-id/...。
+    parser.add_argument('--serial')  # Web 为走棋输出；strategy 保持原有双向协议。
     parser.add_argument('--baud', type=int, default=115200)  # 串口波特率，默认8N1。
     parser.add_argument('--host', default='127.0.0.1')  # 默认通过 SSH 通道访问。
     parser.add_argument('--port', type=int)  # 默认 strategy=5001、web=5000。
@@ -191,9 +181,9 @@ def main():
     parser.add_argument('--skip-engine', action='store_true')  # 仅检查依赖，不能用于 start 或 --search。
     args = parser.parse_args()  # parse_args()：把命令行转为 Namespace。
     if args.project == 'strategy' and (args.backend != 'mock' or args.calibration):
-        parser.error('策略项目没有直接 Arm_Lib 后端；DOFBOT 使用 --project web，不能把两套代码当成已接通。')
-    if args.project == 'web' and args.serial:
-        parser.error('完整网页尚未接入队友视觉串口；--serial 仅供 strategy 使用。')
+        parser.error('独立策略项目保持原有协议；完整网页的走棋输出请使用 --project web --serial。')
+    if args.project == 'web' and (args.serial or args.backend == 'dofbot'):
+        args.backend = 'serial'  # 旧 dofbot 选项也只走串口，绝不调用本机硬件。
     if args.skip_engine and (args.action == 'start' or args.search):
         parser.error('--skip-engine 只能单独用于 check。')
     if (args.port is not None and not 1 <= args.port <= 65535) or not 1 <= args.threads <= 32 or not 16 <= args.hash_mb <= 4096 or not 50 <= args.ms <= 10000 or args.baud <= 0:

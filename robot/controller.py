@@ -1,5 +1,5 @@
 """
-机械臂控制模块 - 模拟和真实机械臂控制
+离线机械臂预演模块 - 只保留纯软件仿真
 整合自原 robot_control.py
 """
 
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class RobotController:
-    """机械臂控制器（支持仿真和真实硬件）"""
+    """仅用于离线预演的模拟器，不连接实机"""
     
     def __init__(self, robot_type: str = None):
         """
@@ -46,18 +46,6 @@ class RobotController:
                 self.is_initialized = True
                 return True
             
-            elif self.robot_type == "dobot":
-                # TODO: 集成 Dobot 机械臂 SDK
-                logger.warning("Dobot 机械臂集成待实现")
-                self.is_initialized = False
-                return False
-            
-            elif self.robot_type == "elephant_robotics":
-                # TODO: 集成大象机器人 SDK
-                logger.warning("大象机器人集成待实现")
-                self.is_initialized = False
-                return False
-            
             else:
                 logger.error(f"未知的机械臂类型：{self.robot_type}")
                 return False
@@ -71,11 +59,6 @@ class RobotController:
         try:
             if self.robot_type == "simulation":
                 logger.info("仿真机械臂已关闭")
-            
-            elif self.robot_device is not None:
-                # 断开真实机械臂连接
-                if hasattr(self.robot_device, 'disconnect'):
-                    self.robot_device.disconnect()
             
             self.is_initialized = False
             logger.info("机械臂已关闭")
@@ -115,12 +98,6 @@ class RobotController:
                 
                 self.current_position = (x, y, z)
                 return True
-            
-            elif self.robot_device is not None:
-                # 真实机械臂：调用 SDK
-                # TODO: 实现真实移动逻辑
-                logger.warning("真实机械臂移动待实现")
-                return False
             
             return False
             
