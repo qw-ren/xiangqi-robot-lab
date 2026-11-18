@@ -3,3 +3,4 @@ pytest>=7.4,<9
 flask>=2.3,<4
 flask-cors>=4,<7
 cchess==1.25.5
+pyserial==3.5  # Serial transport tests also import this package in GitHub CI.
