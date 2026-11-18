@@ -258,7 +258,7 @@ class CameraManager:
             return True
 
         sample = frame[::16, ::16]
-        return not (float(sample.mean()) < 1.0 and float(sample.std()) < 2.0)
+        return not (float(sample.mean()) < 16.0 and float(sample.std()) < 2.0)  # 本机失效设备返回均匀11/12，不能仅排除全零；有纹理的暗画面仍保留。
 
     def _open_capture_with_frame(self) -> Tuple[Optional[cv2.VideoCapture], Optional[np.ndarray]]:
         if self.is_http_network_source:

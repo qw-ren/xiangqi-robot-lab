@@ -21,6 +21,7 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest tests/ -v
+      - run: node --test tests/web/vision_preview.test.cjs
       - run: python tools/vision/aruco_image_test.py --self-test --out artifacts/aruco-ci
       - uses: actions/upload-artifact@v4
         if: always()

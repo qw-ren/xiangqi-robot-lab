@@ -64,6 +64,10 @@ $config = 'configs/local/board-local.json'
 
 ## 与 Web 对接的观测输出
 
+Web 已直接使用共用的 `vision/aruco.py`，启动见 [Web 联调说明](../../web_simulation/README.md)。不需要为 Web 另开本工具占用相机。
+`vision/observation.py` 为观测协议的实现；原 `tools.vision.observation` 保留兼容导入。
+下面的文件发布方式用于独立采样或其他消费者。
+
 在原实时命令追加以下参数（确认画面上方确为黑方底线后才使用 `black-top`）：
 
 ```powershell

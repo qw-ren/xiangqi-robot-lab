@@ -96,6 +96,9 @@ def get_recognizer(camera_index=None, camera_source=None, camera_url=None):
             else:
                 logger.info("摄像头源 %s 已启动", source)
 
+        if getattr(config, 'ROBOT_BACKEND', '') == 'dofbot':  # DOFBOT 对局由规则层复核少子残局。
+            _app.recognizer.dynamic_tracker.min_piece_count = 2  # 不把少于10子的合法残局永久丢弃。
+            _app.recognizer.dynamic_tracker.stable_seconds = 0.4  # 手离开棋盘后等待稳定再判断走子。
         return _app.recognizer
 
 
@@ -198,11 +201,11 @@ $items | ConvertTo-Json -Compress
         return []
 
 
-def list_available_cameras(max_cameras=6):
-    """List local camera choices based on OpenCV indexes that can really read frames."""
+def list_available_cameras(max_cameras=6, refresh=False):
+    """枚举有效设备；max_cameras为扫描上限，refresh=True重新扫描，返回实际可读设备列表。"""
     _app = _app_module()
 
-    if _app.camera_probe_cache is not None:
+    if _app.camera_probe_cache is not None and not refresh:
         return _app.camera_probe_cache
 
     camera_names = get_windows_camera_names()
@@ -214,8 +217,6 @@ def list_available_cameras(max_cameras=6):
         if probe:
             name = camera_names[index] if index < len(camera_names) else None
             label = f"{name or '本地摄像头'}（索引 {index}）"
-            if index == preferred_index:
-                label = f"USB摄像头（索引 {index}）"
             cameras.append(
                 {
                     "index": index,
@@ -228,31 +229,6 @@ def list_available_cameras(max_cameras=6):
             )
 
     cameras.sort(key=lambda camera: 0 if camera["index"] == preferred_index else 1)
-
-    if not any(camera["index"] == preferred_index for camera in cameras):
-        cameras.insert(
-            0,
-            {
-                "index": preferred_index,
-                "name": None,
-                "label": f"USB摄像头（索引 {preferred_index}）",
-                "available": True,
-                "width": config.CAMERA_WIDTH,
-                "height": config.CAMERA_HEIGHT,
-            },
-        )
-
-    if not cameras:
-        cameras.append(
-            {
-                "index": preferred_index,
-                "name": None,
-                "label": f"USB摄像头（索引 {preferred_index}）",
-                "available": True,
-                "width": 0,
-                "height": 0,
-            }
-        )
 
     _app.camera_probe_cache = cameras
     return cameras
@@ -272,7 +248,8 @@ try:
         frame_shape = None
         for _ in range(10):
             ret, frame = cap.read()
-            if ret and frame is not None:
+            sample = frame[::16, ::16] if ret and frame is not None else None
+            if sample is not None and sample.size and not (float(sample.mean()) < 16.0 and float(sample.std()) < 2.0):
                 good += 1
                 frame_shape = frame.shape
             time.sleep(0.02)

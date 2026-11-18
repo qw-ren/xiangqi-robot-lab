@@ -17,10 +17,9 @@ os.environ.setdefault("CHRO_ONNX_INTRA_THREADS", "2")
 
 import cv2
 import numpy as np
-from tools.vision.aruco_image_test import inspect_frame
-from core.keypoint_helper import extract_chessboard
+from vision.aruco import inspect_frame, classify_board
 from core.runonnx.full_classifier import FULL_CLASSIFIER_ONNX
-from tools.vision.observation import ObservationStream, write_latest
+from vision.observation import ObservationStream, write_latest
 
 
 def main() -> None:
@@ -120,8 +119,7 @@ def main() -> None:
             layout = scores = None
             if corners is not None:
                 scaled = corners * np.float32([preview.shape[1]/frame.shape[1], preview.shape[0]/frame.shape[0]])
-                warped, _, _ = extract_chessboard(preview, scaled)
-                _, _, scores, layout = model.pred(warped, is_rgb=False)
+                warped, scores, layout = classify_board(frame, corners, model)
                 recognized_frames += 1
                 if layout != previous:
                     print(layout, flush=True)

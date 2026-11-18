@@ -15,23 +15,44 @@ from web_simulation.routes.camera import camera_request_kwargs
 from web_simulation.services import resolve_camera_source
 
 bp = Blueprint("recognition", __name__)
+image_recognizer = None  # 图片识别器不打开任何摄像头。
+
+
+def aruco_preview_payload(observation):
+    """Keep the formal game separate from a raw visual prediction."""
+    observed = observation.get("board_state")
+    return {"success": True, "event": "vision_preview", "preview_only": True,
+            "stable": False, "move": None, "observation": observation,
+            "observed_board_state": observed,
+            "board_state": dict(_app.game_state["board_state"]),
+            "fen": _app.game_state["current_fen"], "current_fen": _app.game_state["current_fen"],
+            "is_game_running": _app.game_state["is_game_running"],
+            "piece_count": len(observed) if observed is not None else 0,
+            "message": "ArUco 观测预览：" + ", ".join(observation["reasons"] or ["review_required"])}
 
 
 @bp.route("/api/recognize", methods=["POST"])
+@bp.route("/api/vision/observation", methods=["POST"])
 def recognize_board():
     """Recognize the board state from an uploaded image or the live camera."""
     try:
+        if _app.game_state.get('is_game_running'):  # 手动识别只能用于开局前预览。
+            return jsonify(success=False, error='对局期间请使用动态识别，单张识别不会覆盖正式棋局'), 409  # 保护已提交状态。
         data = request.json or {}
         image_data = data.get("image")
         camera_source = resolve_camera_source(**camera_request_kwargs(data))
 
-        recog = _app.get_recognizer(camera_source=camera_source)
-
         if image_data:
+            global image_recognizer  # 复用离线模型，避免每次上传重新加载。
+            with _app.recognizer_lock:
+                if image_recognizer is None:
+                    image_recognizer = _app.BoardRecognizer()  # 不调用 start，因此不扫描摄像头。
+            recog = image_recognizer  # 使用单独的离线识别器。
             image_bytes = base64.b64decode(image_data)
             nparr = np.frombuffer(image_bytes, np.uint8)
             image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         else:
+            recog = _app.get_recognizer(camera_source=camera_source)  # 实时图像才启动相机。
             with _app.camera_lock:
                 image = recog.camera_manager.capture_frame()
 
@@ -39,6 +60,8 @@ def recognize_board():
             return jsonify({"success": False, "error": "无法获取图像"})
 
         # Run the model once; derive the FEN from the result to avoid double inference.
+        if getattr(recog, "vision_backend", "rtmpose") == "aruco":
+            return jsonify(aruco_preview_payload(recog.recognize_observation(image)))
         board_state = recog.recognize_board(image)
 
         if board_state is None:
@@ -109,9 +132,15 @@ def recognize_dynamic_board():
             frame = recog.camera_manager.capture_frame()
 
         if frame is None:
+            if getattr(recog, "vision_backend", "rtmpose") == "aruco":
+                recog.last_observation = recog.aruco.observe(None)
+                return jsonify(aruco_preview_payload(recog.last_observation))
             return jsonify({"success": False, "error": "无法获取图像"})
 
         result = recog.recognize_dynamic_frame(frame)
+
+        if result.get("observation") is not None:
+            return jsonify(aruco_preview_payload(result["observation"]))
 
         raw_board_state = result.get("board_state") or {}
         board_state = web_domain.serialize_board_state(raw_board_state)
@@ -123,6 +152,11 @@ def recognize_dynamic_board():
         recognized_fen = (
             web_domain.board_state_to_fen(board_state, _app.current_turn_color()) if board_state else None
         )
+
+        from web_simulation.dofbot import enabled, accept_observation  # 真实 DOFBOT 的开局和落子确认。
+        if enabled() and _app.game_state['is_game_running'] and (_app.game_state.get('awaiting_initial_board') or _app.game_state.get('pending_dofbot')):  # 必须使用当前请求新采集的画面。
+            ready, message = accept_observation(board_state, bool(result.get('stable')))  # 比较颜色、类型、位置。
+            return jsonify(game_logic.dynamic_state_payload(event='robot_board_confirmed' if ready else 'robot_board_waiting', stable=ready, message=message))  # 仅确认成功才返回新正式棋局。
 
         if _app.game_state["is_game_running"] and _app.game_state.get("awaiting_physical_baseline"):
             if result.get("stable") and raw_board_state:
@@ -228,11 +262,11 @@ def recognize_dynamic_board():
                     move_code, _app.game_state["board_state"]
                 )
 
-                if _app.current_turn_color() != "red":
+                if _app.current_turn_color() != _app.game_state.get('player_color', 'red'):
                     result["move"]["source"] = "ignored_non_player_turn"
                     game_logic.sync_dynamic_baseline_to_game_state(recog)
                     _app.logger.info("Ignored dynamic move outside red turn: %s", move_code)
-                elif not web_domain.is_red_piece(moved_piece):
+                elif web_domain.is_red_piece(moved_piece) != (_app.game_state.get('player_color', 'red') == 'red'):
                     result["move"]["source"] = "ignored_non_red_piece"
                     game_logic.sync_dynamic_baseline_to_game_state(recog)
                     _app.logger.info("Ignored non-red dynamic move: %s, piece=%s", move_code, moved_piece)
@@ -241,6 +275,15 @@ def recognize_dynamic_board():
                     game_logic.sync_dynamic_baseline_to_game_state(recog)
                     _app.logger.info("Ignored duplicate player dynamic move: %s", move_code)
                 else:
+                    if enabled():  # DOFBOT 模式同时校验人类走棋和全部棋子。
+                        from xq_utils.rules import checked_transition  # 使用同一规则库。
+                        try:  # 错误识别不写入棋谱。
+                            preview = checked_transition(_app.game_state['current_fen'], move_code)  # 检查蹩马腿、将军等规则。
+                            if preview['board_state'] != board_state:  # 不允许识别多动一颗或错认类型。
+                                raise ValueError('识别到的全部棋子与该合法走法不一致')  # 保留正式局面。
+                        except ValueError as exc:  # 返回等待，不触发 AI。
+                            game_logic.sync_dynamic_baseline_to_game_state(recog)  # 恢复上一个正式基线。
+                            return jsonify(game_logic.dynamic_state_payload(event='invalid_move', message=str(exc)))  # 页面提示纠正棋盘。
                     result["move"]["source"] = "player"
                     _app.game_state["board_state"] = board_state
                     response_board_state = dict(_app.game_state["board_state"])
@@ -249,6 +292,8 @@ def recognize_dynamic_board():
                     _app.game_state["turn_count"] += 1
                     _app.game_state["last_player_move"] = move_code
                     _app.update_current_fen()
+                    if enabled():  # 使用规则库保留准确的 FEN 计数。
+                        _app.game_state['current_fen'] = preview['fen']  # 不凭棋谱长度猜测计数。
                     _app.logger.info(
                         "后端同步走子: %s, 当前回合: %s", move_code, _app.game_state["turn_count"]
                     )
@@ -289,7 +334,7 @@ def get_ai_move():
         if _app.game_state["ai_thinking"]:
             return jsonify({"success": False, "error": "AI已经在思考中"})
 
-        ai_color = "black"
+        ai_color = _app.game_state.get('ai_color', 'black')  # AI 使用开局时锁定的执色。
         _app.game_state["ai_color"] = ai_color
         _app.game_state["player_color"] = web_domain.opposite_color(ai_color)
 
@@ -307,7 +352,11 @@ def get_ai_move():
                 }
             )
 
-        depth = request.json.get("depth", 8) if request.is_json else 8
+        if not _app.game_state.get("is_game_running"):  # 未开始时不启动搜索。
+            return jsonify({"success": False, "error": "请先开始对局"})  # 提示网页先开始。
+        depth = int((request.get_json(silent=True) or {}).get("depth", 8))  # 只接受数值深度。
+        if not 1 <= depth <= 30:  # 与网页范围一致。
+            raise ValueError("搜索深度需要在 1 到 30 之间")  # 拒绝错误参数。
 
         _app.game_state["ai_thinking"] = True
         _app.game_state["ai_analysis"] = {
@@ -327,11 +376,12 @@ def get_ai_move():
                 engine = _app.get_ai_engine()
                 if not engine.is_ready or engine.process is None:
                     _app.logger.error("AI引擎尚未就绪或未成功启动（请检查Pikafish文件是否存在）。")
+                    _app.game_state['ai_analysis']['error'] = 'Pikafish 未就绪，请检查引擎文件'  # 网页能看到失败原因。
                     return
 
                 engine.set_position(_app.game_state["initial_fen"], _app.game_state["move_history"])
                 depth = depth_to_use
-                engine._send_command(f"go depth {depth}")
+                engine._send_command(f"go depth {depth} movetime {int(_app.config.THINK_TIME)}")  # 网页同时限制搜索时间。
 
                 start_time = time.time()
                 while time.time() - start_time < 30:
@@ -345,6 +395,9 @@ def get_ai_move():
                             _app.game_state["ai_analysis"]["depth"] = int(parts[parts.index("depth") + 1])
                         if "cp" in parts:
                             _app.game_state["ai_analysis"]["score"] = int(parts[parts.index("cp") + 1])
+                            _app.game_state['ai_analysis'].pop('mate', None)  # 普通分数覆盖旧杀棋分数。
+                        if 'mate' in parts:  # Pikafish 也可能返回杀棋距离。
+                            _app.game_state['ai_analysis']['mate'] = int(parts[parts.index('mate') + 1])  # 网页保留原始杀棋信息。
                         if "pv" in parts:
                             pv_idx = line.find(" pv ")
                             _app.game_state["ai_analysis"]["pv"] = line[pv_idx + 4 :].strip()
@@ -354,11 +407,20 @@ def get_ai_move():
                     if line.startswith("bestmove"):
                         best_move = line.split()[1]
                         _app.game_state["ai_analysis"]["best_move"] = best_move
-                        if best_move != "(none)":
+                        if best_move not in ('(none)', '0000'):  # 无合法走法时不驱动机械臂。
                             _app.apply_ai_best_move(best_move)
+                        else:  # 常见终局标志。
+                            _app.game_state['is_game_running'] = False  # 停止自动搜索循环。
+                            _app.game_state['ai_analysis']['error'] = '当前方无合法走法，对局结束'  # 页面显示原因。
                         break
+                else:  # 引擎30秒没有返回 bestmove。
+                    engine._send_command('stop')  # 不让后台搜索无限持续。
+                    engine.stop()  # 关闭本次流，避免下一局读到过期 bestmove。
+                    _app.ai_engine = None  # 下次显式重试会重新启动引擎。
+                    _app.game_state['ai_analysis']['error'] = '引擎搜索超时，请检查引擎和资源设置'  # 不静默失败。
             except Exception as exc:
                 _app.logger.error("后台思考线程出错: %s", exc)
+                _app.game_state['ai_analysis']['error'] = str(exc)  # 将真实错误传给网页。
             finally:
                 _app.game_state["ai_thinking"] = False
 
@@ -387,6 +449,8 @@ def get_ai_status():
             "board_state": _app.game_state["board_state"],
             "piece_count": len(_app.game_state["board_state"]),
             "robot_mode": _app.game_state.get("robot_mode", _app.ROBOT_MODE_HARDWARE),
+            "awaiting_physical_baseline": _app.game_state.get('awaiting_physical_baseline', False),  # 动作结束与视觉提交分开展示。
+            "pending_dofbot": bool(_app.game_state.get('pending_dofbot')),  # 不泄露为正式棋局。
             "vision_paused": (_app.game_state.get("vision_pause_until", 0.0) or 0.0) > time.monotonic(),
             "vision_pause_remaining": round(
                 max(0.0, (_app.game_state.get("vision_pause_until", 0.0) or 0.0) - time.monotonic()), 1
@@ -396,45 +460,31 @@ def get_ai_status():
 
 
 @bp.route("/api/player_move", methods=["POST"])
-def player_move():
-    """Handle a player-submitted move."""
-    try:
-        data = request.json or {}
-        uci_move = data.get("move")
-
-        if not uci_move:
-            return jsonify({"success": False, "error": "缺少走法参数"})
-
-        if _app.current_turn_color() != _app.game_state.get("player_color", "red"):
-            turn_name = "红方" if _app.current_turn_color() == "red" else "黑方"
-            return jsonify(
-                {
-                    "success": False,
-                    "error": f"当前是{turn_name}回合，尚未轮到玩家走棋",
-                }
-            )
-
-        _app.logger.info("玩家走法: %s (回合 %s)", uci_move, _app.game_state["turn_count"])
-
-        _app.game_state["move_history"].append(uci_move)
-        _app.game_state["display_history"].append(f"红方 {uci_move}")
-        _app.game_state["turn_count"] += 1
-        _app.game_state["last_player_move"] = uci_move
-        _app.update_current_fen()
-
-        return jsonify(
-            {
-                "success": True,
-                "move": uci_move,
-                "fen": _app.game_state["current_fen"],
-                "display_history": _app.game_state["display_history"],
-                "is_player_turn": False,
-                "turn_count": _app.game_state["turn_count"],
-            }
-        )
-    except Exception as exc:
-        _app.logger.error("处理玩家走法失败: %s", exc)
-        return jsonify({"success": False, "error": str(exc)})
+def player_move():  # 虚拟对局的人类走棋入口；实体走棋由视觉确认。
+    try:  # 将非法走法返回网页，避免修改半个状态。
+        from xq_utils.rules import checked_transition  # 导入已校验的 cchess 适配器。
+        gs = _app.game_state  # 使用网页唯一的正式状态。
+        if not gs.get("is_game_running"):  # 对局必须已经开始。
+            raise ValueError("请先开始虚拟对局。")  # 阻止空闲时走棋。
+        from web_simulation.dofbot import enabled, get_controller  # 模拟 DOFBOT 也可用鼠标输入。
+        if gs.get("robot_mode") != "simulation" and not (enabled() and get_controller().backend == 'mock'):  # 真机人类走棋由摄像头识别。
+            raise ValueError("实体模式请通过视觉确认人类走棋。")  # 防止网页覆盖实体棋局。
+        if gs.get("ai_thinking"):  # 引擎计算期间不接收新走法。
+            raise ValueError("AI 正在思考，请等待。")  # 保持计算局面一致。
+        if _app.current_turn_color() != gs.get("player_color", "red"):  # 检查轮次。
+            raise ValueError("尚未轮到玩家走棋。")  # 拒绝连续走两步。
+        move = (request.json or {}).get("move")  # 读取 Pikafish/ICCS 走法。
+        preview = checked_transition(gs["current_fen"], move)  # 先完整校验，失败时没有状态变化。
+        gs["board_state"] = preview["board_state"]  # 同步移动棋子并处理吃子。
+        gs["current_fen"] = preview["fen"]  # 同步红黑轮次及 FEN 计数。
+        gs["move_history"].append(move)  # 只在校验成功后写入棋谱。
+        gs["display_history"].append(f"红方 {move}")  # 保留原网页显示格式。
+        gs["turn_count"] += 1  # 增加半步数。
+        gs["last_player_move"] = move  # 记录最后的人类走法。
+        return jsonify(dict(success=True, move=move, fen=gs["current_fen"], board_state=gs["board_state"], display_history=gs["display_history"], is_player_turn=False, turn_count=gs["turn_count"]))  # 返回统一状态。
+    except Exception as exc:  # 将校验错误交给前端展示。
+        _app.logger.error("玩家走法被拒绝: %s", exc)  # 保留联调日志。
+        return jsonify(dict(success=False, error=str(exc)))  # 保持原接口的 success 协议。
 
 
 @bp.route("/api/simulate_robot", methods=["POST"])

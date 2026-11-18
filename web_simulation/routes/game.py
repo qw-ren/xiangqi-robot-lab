@@ -18,10 +18,19 @@ def start_game():
         except ValueError as exc:
             return jsonify({"success": False, "error": str(exc)}), 400
 
+        if getattr(_app.config, "DESKTOP_SIMULATION_ONLY", False) and robot_mode != "simulation":  # 电脑练习版不发实体指令。
+            return jsonify({"success": False, "error": "当前为电脑虚拟调试，请使用模拟测试"}), 400  # 明确返回模式错误。
+        from web_simulation.dofbot import enabled, start_hardware  # 新硬件使用独立的连接、开始流程。
+        if enabled() and robot_mode == 'hardware':  # 原 STM32 路径保留。
+            return start_hardware(data)  # 连接本身不会触发归零。
+        if _app.game_state.get("ai_thinking"):  # 搜索期间不重建局面。
+            return jsonify({"success": False, "error": "AI 正在思考，请等待后再开始新局"}), 409  # 防止旧结果写进新局。
         use_recognized_board = data.get("use_recognized_board", False)
         board_state = data.get("board_state", {})
-        ai_color = "black"
-        first_player = "red"
+        ai_color = data.get('ai_color', 'black')  # 使用网页实际执色。
+        first_player = data.get('first_player', 'red')  # 支持调试先手。
+        if ai_color not in ('red', 'black') or first_player not in ('red', 'black'):  # 校验选项。
+            return jsonify(success=False, error='执色和先手参数无效'), 400  # 错误时不修改状态。
 
         _app.game_state["is_game_running"] = False
         _app.game_state["robot_mode"] = robot_mode
@@ -53,6 +62,8 @@ def start_game():
         _app.game_state["move_history"] = []
         _app.game_state["display_history"] = []
         _app.game_state["pending_ai_move"] = None
+        _app.game_state['pending_dofbot'] = None  # 清空已经结束的 DOFBOT 待确认结果。
+        _app.game_state['awaiting_initial_board'] = False  # 新模拟局不等待实体画面。
         _app.game_state["last_player_move"] = None
         _app.game_state["last_ai_command_token"] = None
         _app.game_state["awaiting_physical_baseline"] = False
@@ -110,10 +121,15 @@ def start_game():
 def reset_game():
     """Reset the game to its initial (idle) state."""
     try:
+        if _app.game_state.get("ai_thinking"):  # 搜索期间不重置正式棋局。
+            return jsonify({"success": False, "error": "AI 正在思考，请等待后再重置"}), 409  # 防止旧搜索结果串局。
         _app.game_state["current_fen"] = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
         _app.game_state["move_history"] = []
         _app.game_state["display_history"] = []
         _app.game_state["pending_ai_move"] = None
+        _app.game_state['pending_dofbot'] = None  # 重置后不保留旧预期局面。
+        _app.game_state['awaiting_initial_board'] = False  # 重置为未开局。
+        _app.game_state['ai_analysis'] = {}  # 清除旧分析。
         _app.game_state["robot_moving"] = False
         _app.game_state["vision_pause_until"] = 0.0
         _app.game_state["vision_pause_reason"] = ""

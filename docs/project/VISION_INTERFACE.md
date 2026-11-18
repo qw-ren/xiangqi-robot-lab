@@ -7,7 +7,7 @@ Web 负责展示、交互和用户确认；游戏/策略层负责轮次、合法
 机械臂层负责运动规划、执行与反馈。视觉不直接发送运动指令。
 
 当前重点是可靠的视觉观测与 Web 对接。`vision` 分支用于视觉开发和推送，经团队评审后再合入 `main`。
-本轮不改队友的 Web 路由或控制实现。
+Web 已接入 ArUco 观测预览；队友的控制实现保留，未验证实物闭环。
 
 ## 坐标约定
 
@@ -34,8 +34,8 @@ Web 用离散格点，不需要摄像头像素坐标。例如 `"4,7": "C"` 是�
 退出、读帧错误或主动重新定位会使快照失效，不把上一帧伪装为当前观测。
 这可能比固定机位缓存模式更慢，尚无本轮实机帧率结论。
 
-同进程接口为 `tools.vision.observation.ObservationStream.observe(...)`，只依赖标准库，可由另一套摄像头服务传入分类结果；它本身不执行模型推理。
-目前交付的是 Python / 本机文件接口，**没有新增 HTTP 路由**。Web 后端可读取文件，再通过自己的 API 发给浏览器；异机协作需队友在后端提供传输层。
+同进程接口为 `vision.observation.ObservationStream.observe(...)`，只依赖标准库，可由另一套摄像头服务传入分类结果；它本身不执行模型推理。
+Web 默认直接调用 `vision.aruco.ArucoRecognizer`，无需另启视觉进程或读取 JSON 文件。HTTP 入口为 `POST /api/vision/observation`，原 `/api/recognize` 和 `/api/recognize/dynamic` 也已接入。响应中 `observation` 是下述原始观测，`observed_board_state` 是预测字典，外层 `board_state` 保留正式游戏状态。`preview_only=true` 表示只供预览。独立文件输出仍可用于其他程序；不要让 Web 和独立工具同时占用同一相机。
 
 ```python
 import json
@@ -81,7 +81,7 @@ if fresh and snapshot["status"] != "rejected":
 默认连续 3 帧、最低模型分数 0.8，可配置。它们只是联调参数，未经过独立样本集标定；模型分数也不是正确率。
 暂未实现手部遮挡检测、合法状态变化校验或自动接受棋局；`can_update_game` 始终为 `false`。
 连续高分的“炮变相”依然可能出现，不能用稳定或分数掩盖该问题。后续工作是以已标注现场数据验证遮挡拒识、无遮挡错格与误接受率，再决定模型改进。
-现有 `web_simulation/routes/recognition.py` 仍使用原识别器，不会自动切换到此接口。接入时应保留 Web 原有效棋局，显式选择何时确认新观测。
+现有 `web_simulation/routes/recognition.py` 默认使用 ArUco，将观测单独返回，保留 Web 原有效棋局。对局中不把原始观测交给旧走子检测或 DOFBOT 确认逻辑；正式状态接受策略仍待后续实现。
 
 ## 未来控制接口
 

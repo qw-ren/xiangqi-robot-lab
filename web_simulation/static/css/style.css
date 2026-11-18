@@ -132,6 +132,7 @@ select {
 }
 
 .panel {
+    min-width: 0; /* 允许窄窗口中的网格项目缩小，避免 FEN 和日志把整个页面撑宽。 */
     background: rgba(255, 255, 255, 0.96);
     border: 1px solid rgba(216, 224, 236, 0.95);
     border-radius: var(--radius);
@@ -141,6 +142,7 @@ select {
 .control-panel,
 .info-panel,
 .vision-panel {
+    min-width: 0; /* 保持三栏与单栏布局都能容纳在窗口内。 */
     display: grid;
     gap: 18px;
 }
@@ -464,6 +466,7 @@ select {
     margin: 6px 0;
     color: #3d3324;
     line-height: 1.55;
+    overflow-wrap: anywhere; /* 完整棋盘 JSON 在日志面板内换行。 */
     overflow-wrap: anywhere;
 }
 
@@ -565,3 +568,13 @@ select {
         flex-direction: column;
     }
 }
+
+/* 完整操作区随窗口宽度换行；标定大文本不撑宽布局。 */
+.visible-controls { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; }
+.help-text, #dofbot-status { font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+#dofbot-status { padding: 9px; background: #edf4ff; border-radius: 8px; }
+.trace-output { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+#calibration-json { width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12px; resize: vertical; }
+#fen-display { width: 100%; box-sizing: border-box; padding: 10px; font-family: monospace; }
+details { margin-top: 14px; } details summary { cursor: pointer; font-weight: 600; }
+.btn-danger { background: #a61c2b; color: white; }
