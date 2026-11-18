@@ -16,7 +16,8 @@ Git 分支是同一份工作目录的不同版本，不对应 `vision/整个项�
 | `web_simulation/` | Flask、HTML / JS，观测与正式游戏状态分离 |
 | `xiangqi_strategy/` | 队友的独立策略 / 串口服务，仍是独立棋局 |
 | `ai/`、`engine_assets/` | 引擎适配与公共权重，平台可执行文件自行配置 |
-| `robot/`、`firmware/` | 控制适配与固件，当前不进行运动验证 |
+| `robot/` | TCP/串口控制适配；`robot/arm_teaching/` 是独立树莓派工具，通过 I2C 控制 1..5 号舵机、通过 BCM GPIO21 控制电磁铁，不接入现有自动走棋链 |
+| `firmware/` | 固件；本次机械臂示教整合不修改固件 |
 | `xq_utils/` | FEN、坐标、记谱及队友引入的 cchess 规则层 |
 | `tools/vision/`、`tools/web/`、`tools/deploy/` | 命令行入口与运行 / 部署辅助 |
 | `configs/aruco/`、`configs/dofbot/` | 共享配置示例，不能冒充现场标定 |
