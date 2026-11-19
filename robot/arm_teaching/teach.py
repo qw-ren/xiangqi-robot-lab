@@ -13,7 +13,7 @@ import tempfile
 import time
 
 JOINT_IDS = (1, 2, 3, 4, 5)
-DEFAULT_DURATION_MS = 500
+DEFAULT_DURATION_MS = 1000
 WRITE_GAP_SECONDS = 0.01
 ELECTROMAGNET_GPIO = 21
 MOVE_SETTLE_SECONDS = 0.15
@@ -135,6 +135,30 @@ class PointStore:
                 os.unlink(temporary)
         self.points = updated
 
+    def delete(self, name):
+        name = point_name(name)
+        if name not in self.points:
+            raise TeachError("Point {} has not been saved.".format(name))
+
+        updated = dict(self.points)
+        del updated[name]
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", suffix=".tmp",
+                    dir=str(self.path.parent), delete=False) as stream:
+                temporary = stream.name
+                json.dump({"version": 1, "points": updated}, stream,
+                          indent=2, allow_nan=False)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, str(self.path))
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
+        self.points = updated
+
 
 class TeachController:
     def __init__(self, arm, store, electromagnet=None, emit=print):
@@ -231,6 +255,42 @@ class TeachController:
         self.emit("Electromagnet command: {} (GPIO{} {}).".format(
             action, ELECTROMAGNET_GPIO, level))
 
+    def set_torque(self, enabled):
+        self.arm.Arm_serial_set_torque(1 if enabled else 0)
+        state = "ON" if enabled else "OFF"
+        self.emit("Bus-servo torque {} request sent to the extension board; "
+                  "individual servo torque states are not verified.".format(state))
+
+    def read_status(self, servos):
+        for servo in servos:
+            try:
+                status = self.arm.Arm_ping_servo(servo)
+            except Exception as exc:
+                self.emit("ID {} status=UNAVAILABLE: {}".format(servo, exc))
+                continue
+            if status is None:
+                self.emit("ID {} status=UNAVAILABLE".format(servo))
+                continue
+            if status == 0xDA:
+                description = "board reports normal"
+            elif status == 0:
+                description = "no servo reply reported by board"
+            else:
+                faults = []
+                for bit, label in (
+                        (0x20, "overload/stall protection"),
+                        (0x04, "temperature fault"),
+                        (0x01, "voltage fault")):
+                    if status & bit:
+                        faults.append(label)
+                other = status & ~0x25
+                if other:
+                    faults.append("other status bits 0x{:02X}".format(other))
+                description = ", ".join(faults)
+            self.emit("ID {} status=0x{:02X}: {}".format(
+                servo, status, description))
+        self.emit("Status does not read torque enable or confirm arrival.")
+
     def execute(self, command_line):
         try:
             args = shlex.split(command_line)
@@ -250,8 +310,16 @@ class TeachController:
                 raise TeachError("Use 'magnet on' or 'magnet off'.")
             enabled = action == "on"
             self.set_magnet(enabled)
+        elif command == "torque" and len(args) == 2:
+            action = args[1].lower()
+            if action not in ("on", "off"):
+                raise TeachError("Use 'torque on' or 'torque off'.")
+            self.set_torque(action == "on")
         elif command == "read" and len(args) == 1:
             self.read_pose()
+        elif command == "status" and len(args) in (1, 2):
+            servos = (servo_id(args[1]),) if len(args) == 2 else JOINT_IDS
+            self.read_status(servos)
         elif command == "jog" and len(args) in (3, 4):
             servo = servo_id(args[1])
             delta = number(args[2], "Delta")
@@ -272,6 +340,10 @@ class TeachController:
                 raise TeachError("Point not saved because one or more readings failed.")
             self.store.save(args[1], pose)
             self.emit("Saved {}.".format(point_name(args[1])))
+        elif command in ("delete", "del") and len(args) == 2:
+            name = point_name(args[1])
+            self.store.delete(name)
+            self.emit("Deleted {}.".format(name))
         elif command == "goto" and len(args) in (2, 3):
             name = point_name(args[1])
             if name not in self.store.points:
@@ -296,18 +368,23 @@ class TeachController:
 
 HELP = """Commands (angles are Arm_Lib logical degrees):
   magnet on / magnet off       Switch electromagnet (BCM GPIO21)
+  torque off / torque on       Request torque off/on for all bus servos
   read                         Read IDs 1..5
+  status [ID]                  Query board-reported servo status (all or one)
   jog ID DELTA [MS]             Relative move; no angle-step cap
   set ID ANGLE [MS]             Set one joint to an absolute angle
   pose J1 J2 J3 J4 J5 [MS]       Set all five joints in ID order
   save NAME                     Save the current five-angle pose
+  delete NAME                   Delete one saved point (alias: del)
   goto NAME [MS]                 Replay a saved pose
   goto2 FROM TO [MS]             Move one piece, e.g. goto2 c2 g5
   points                        List saved poses
   help                          Show commands
   quit                          Exit
 
-Default move time is 500 ms. Use 0 for the board's fastest setting.
+Default move time is 1000 ms. Use 0 for the board's fastest setting.
+Torque requests affect the whole bus-servo group. Torque off may let the arm
+drop. Status reports communication/faults, not actual torque enable or arrival.
 The driver extends the vendor angle mapping and clamps only the encoded
 position to the extension-board command range 96..4000. Read feedback is
 displayed without angle clamping. goto2 moves through the saved 'a' (approach)

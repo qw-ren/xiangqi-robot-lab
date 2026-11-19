@@ -10,6 +10,7 @@ POSITION_MIN = 96
 POSITION_MAX = 4000
 SERVO_POSITION_MAX = 4095
 ACTIVE_IDS = (1, 2, 3, 4, 5)
+STATUS_WAIT_SECONDS = 0.005
 
 
 def _servo_id(value):
@@ -96,3 +97,20 @@ class Arm_Device:
         word = self.bus.read_word_data(self.addr, register)
         position = ((word >> 8) & 0xFF) | ((word << 8) & 0xFF00)
         return position_to_angle(servo_id, position)
+
+    def Arm_serial_set_torque(self, onoff):
+        """Request group torque on/off; individual servo state is not read back."""
+        if isinstance(onoff, bool) or not isinstance(onoff, int) or onoff not in (0, 1):
+            raise ValueError("torque state must be 0 (off) or 1 (on)")
+        self.bus.write_byte_data(self.addr, 0x1A, onoff)
+
+    def Arm_ping_servo(self, servo_id):
+        """Read board status: 0xDA normal, 0 no reply, other bytes are faults.
+
+        This is not the servo's torque-enable register. Preserve the board's
+        status byte so the caller can distinguish no reply from a fault.
+        """
+        servo_id = _servo_id(servo_id)
+        self.bus.write_byte_data(self.addr, 0x38, servo_id)
+        time.sleep(STATUS_WAIT_SECONDS)
+        return self.bus.read_byte_data(self.addr, 0x38)

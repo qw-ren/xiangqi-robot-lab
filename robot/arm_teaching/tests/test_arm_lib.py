@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -12,9 +13,10 @@ from Arm_Lib.Arm_Lib import (  # noqa: E402
 
 
 class FakeBus:
-    def __init__(self, position=900):
+    def __init__(self, position=900, status=0xDA):
         self.calls = []
         self.position = position
+        self.status = status
 
     def write_i2c_block_data(self, address, register, data):
         self.calls.append(("block", address, register, data))
@@ -25,6 +27,10 @@ class FakeBus:
     def read_word_data(self, address, register):
         value = self.position
         return ((value & 0xFF) << 8) | ((value >> 8) & 0xFF)
+
+    def read_byte_data(self, address, register):
+        self.calls.append(("read_byte", address, register))
+        return self.status
 
 
 class AngleMappingTests(unittest.TestCase):
@@ -83,6 +89,55 @@ class AngleMappingTests(unittest.TestCase):
         arm = Arm_Device(bus=bus)
         self.assertEqual(arm.Arm_serial_servo_read(1), 253)
         self.assertEqual(bus.calls[0], ("byte", 0x15, 0x31, 0))
+
+    def test_torque_switch_writes_board_register(self):
+        bus = FakeBus()
+        arm = Arm_Device(bus=bus)
+        arm.Arm_serial_set_torque(0)
+        arm.Arm_serial_set_torque(1)
+        self.assertEqual(bus.calls, [
+            ("byte", 0x15, 0x1A, 0),
+            ("byte", 0x15, 0x1A, 1),
+        ])
+
+    def test_torque_switch_rejects_invalid_state(self):
+        arm = Arm_Device(bus=FakeBus())
+        for state in (-1, 2, True, 0.0, "1"):
+            with self.subTest(state=state):
+                with self.assertRaises(ValueError):
+                    arm.Arm_serial_set_torque(state)
+
+    def test_status_uses_board_status_register_and_waits_for_reply(self):
+        bus = FakeBus()
+        arm = Arm_Device(bus=bus)
+        with patch("Arm_Lib.Arm_Lib.time.sleep") as sleep:
+            self.assertEqual(arm.Arm_ping_servo(3), 0xDA)
+        self.assertEqual(bus.calls, [
+            ("byte", 0x15, 0x38, 3),
+            ("read_byte", 0x15, 0x38),
+        ])
+        sleep.assert_called_once_with(0.005)
+
+    def test_status_preserves_no_reply_and_combined_faults(self):
+        for value in (0x00, 0x20, 0x25, 0x40):
+            with self.subTest(status=value):
+                arm = Arm_Device(bus=FakeBus(status=value))
+                with patch("Arm_Lib.Arm_Lib.time.sleep"):
+                    self.assertEqual(arm.Arm_ping_servo(2), value)
+
+    def test_status_rejects_inactive_id_before_using_bus(self):
+        bus = FakeBus()
+        arm = Arm_Device(bus=bus)
+        with self.assertRaises(ValueError):
+            arm.Arm_ping_servo(6)
+        self.assertEqual(bus.calls, [])
+
+    def test_status_propagates_i2c_errors(self):
+        arm = Arm_Device(bus=FakeBus())
+        with patch.object(arm.bus, "read_byte_data", side_effect=OSError("bus error")):
+            with patch("Arm_Lib.Arm_Lib.time.sleep"):
+                with self.assertRaises(OSError):
+                    arm.Arm_ping_servo(3)
 
     def test_single_servo_api_rejects_id_six(self):
         bus = FakeBus()
