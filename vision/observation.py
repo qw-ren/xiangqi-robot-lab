@@ -26,7 +26,7 @@ class ObservationStream:
         self._count = 0
 
     def observe(self, *, frame_id: int, captured_at: str, calibration: dict,
-                layout: Optional[str] = None, scores=None) -> dict:
+                layout: Optional[str] = None, scores=None, source: Optional[str] = None) -> dict:
         """Return a complete snapshot. Empty/failed input clears temporal history.
 
         Cell row/col always refer to the input image. board_state uses the Web
@@ -68,6 +68,9 @@ class ObservationStream:
             board = None
 
         # Count only consecutive frames passing the basic prediction checks.
+        fallback = source == "rtmpose_fallback" and layout is not None
+        if fallback:
+            reasons.append("rtmpose_fallback")
         prediction_ok = localized and layout is not None and not any(
             reason in reasons for reason in ("unknown_cells", "low_scores"))
         self._count = (self._count + 1 if layout == self._previous else 1) if prediction_ok else 0
@@ -76,11 +79,12 @@ class ObservationStream:
         if prediction_ok and not stable:
             reasons.append("warming_up")
         status = "review_required" if not reasons else "provisional"
-        if not prediction_ok:
+        if not prediction_ok and not (fallback and "unknown_cells" not in reasons):
             status = "rejected"
         return {
             "schema_version": "1.0", "frame_id": frame_id, "captured_at": captured_at,
             "status": status, "reasons": reasons,
+            "source": source or ("aruco" if localized else None),
             "orientation": self.orientation,
             "coordinates": {"cells": "image_top_left_zero_based_row_col",
                             "board_state": "black_top_zero_based_col_row"},

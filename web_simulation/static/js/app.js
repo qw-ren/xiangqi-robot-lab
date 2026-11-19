@@ -756,12 +756,27 @@ class ChessSimulation {
         const observation = data.observation;
         const labels = {
             unconfirmed_geometry: '使用临时标定', orientation_unknown: '尚未指定棋盘朝向',
-            localization_failed: '定位失败，请检查四枚标记', unknown_cells: '存在未知格',
+            localization_failed: 'ArUco 定位失败', unknown_cells: '存在未知格',
+            rtmpose_fallback: '已显示 RTMPose 备用预测',
             low_scores: '存在低分格', warming_up: '正在累计连续帧', no_prediction: '暂无分类结果',
             review_required: '仍需确认，连续稳定不代表分类准确'
         };
         const reasons = observation.reasons.length ? observation.reasons : ['review_required'];
-        const message = `ArUco · ${reasons.map(reason => labels[reason] || reason).join('；')} · 原始预测，未写入棋局`;
+        const calibration = observation.calibration || {};
+        const missing = calibration.missing_ids || [];
+        const detected = calibration.detected_ids || [];
+        let detail = '';
+        if (missing.length) detail = ` · 已检测 ${detected.join(', ') || '无'}，缺少 ${missing.join(', ')}`;
+        else if (calibration.status === 'marker_to_board_geometry_missing_or_unconfirmed') {
+            detail = ' · 标记已找到，请检查标定配置及临时标定启动参数';
+        } else if (calibration.status === 'inconsistent_marker_geometry') {
+            detail = ` · 标记几何不一致，最大重投影误差 ${calibration.max_reprojection_error_px.toFixed(2)} px`;
+        } else if (calibration.status === 'board_outside_image_or_degenerate') {
+            detail = ' · 棋盘投影越界或四角无效';
+        } else if (calibration.status === 'duplicate_marker_ids') {
+            detail = ' · 画面有重复的标记 ID';
+        }
+        const message = `ArUco · ${reasons.map(reason => labels[reason] || reason).join('；')}${detail} · 原始预测，未写入棋局`;
         const panel = document.getElementById('vision-observation-status');
         if (panel) panel.textContent = message;
         if (message !== this.lastVisionMessage) {

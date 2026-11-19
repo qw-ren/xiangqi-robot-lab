@@ -28,7 +28,8 @@ Web 用离散格点，不需要摄像头像素坐标。例如 `"4,7": "C"` 是�
 
 ## 可运行接口
 
-生产端：`tools/vision/aruco_live.py --latest-json artifacts/vision/latest.json`。
+独立采样入口为 `tools/vision/aruco_live.py --latest-json artifacts/vision/latest.json`。
+Web 支持同帧备用预测。ArUco 定位失败且 RTMPose 有结果时，`observation.source` 为 `rtmpose_fallback`。低分作为提示保留，该结果可用于预览。未知格仍会拒绝该帧。独立采样入口仅运行 ArUco。
 它为每帧写完整快照，通过临时文件 + 原子替换避免 Web 读到半个 JSON。
 启用此选项时每帧重新检查 ArUco 和棋盘几何，不沿用失效角点；缺码时发布拒绝状态。
 退出、读帧错误或主动重新定位会使快照失效，不把上一帧伪装为当前观测。

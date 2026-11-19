@@ -50,12 +50,13 @@ class ArucoRecognizer:
         with self._lock:
             self.stream = ObservationStream(self._orientation, self._stable_frames, self._min_score)
 
-    def observe(self, image: np.ndarray) -> dict:
+    def observe(self, image: np.ndarray, fallback=None) -> dict:
         with self._lock:
             self.frame_id += 1
             captured_at = datetime.now().astimezone().isoformat()
             calibration = {}
             layout = scores = None
+            source = None
             if image is not None:
                 calibration, _, _ = inspect_frame(image, self.config)
                 calibration["frame_id"] = self.frame_id
@@ -65,8 +66,14 @@ class ArucoRecognizer:
                         from core.runonnx.full_classifier import FULL_CLASSIFIER_ONNX
                         self._model = FULL_CLASSIFIER_ONNX(self.model_path)
                     _, scores, layout = classify_board(image, calibration["board_pixel_corners"], self._model)
+                    source = "aruco"
+                elif fallback is not None:
+                    layout, scores = fallback(image)
+                    if layout is not None:
+                        source = "rtmpose_fallback"
             observation = self.stream.observe(frame_id=self.frame_id, captured_at=captured_at,
-                                               calibration=calibration, layout=layout, scores=scores)
+                                               calibration=calibration, layout=layout, scores=scores,
+                                               source=source)
             observation["config_sha256"] = self.config_sha256
             return observation
 
@@ -78,10 +85,22 @@ def inspect_frame(image: np.ndarray, config: dict) -> tuple:
     dictionary = aruco.getPredefinedDictionary(getattr(aruco, config['dictionary']))
     params = aruco.DetectorParameters()
     params.cornerRefinementMethod = aruco.CORNER_REFINE_SUBPIX
-    corners, ids, rejected = aruco.ArucoDetector(dictionary, params).detectMarkers(image)
+    detector = aruco.ArucoDetector(dictionary, params)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    corners, ids, rejected = detector.detectMarkers(gray)
     found = [] if ids is None else ids.flatten().tolist()
     expected = config['required_ids']
+    preprocessing = 'grayscale'
+    if not set(expected).issubset(found):
+        enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+        retry_corners, retry_ids, retry_rejected = detector.detectMarkers(enhanced)
+        retry_found = [] if retry_ids is None else retry_ids.flatten().tolist()
+        if len(set(expected).intersection(retry_found)) > len(set(expected).intersection(found)):
+            corners, ids, rejected, found = retry_corners, retry_ids, retry_rejected, retry_found
+            preprocessing = 'clahe'
     result = {'dictionary': config['dictionary'],
+              'marker_preprocessing': preprocessing,
+              'frame_size': [image.shape[1], image.shape[0]],
               'test_only': bool(config.get('test_only', True)), 'detected_ids': found,
               'missing_ids': sorted(set(expected)-set(found)), 'unexpected_ids': sorted(set(found)-set(expected)),
               'duplicate_ids': sorted({i for i in found if found.count(i)>1}),
