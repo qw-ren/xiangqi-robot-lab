@@ -26,9 +26,9 @@ proto.init = async function () {
     bind('btn-slots-clear', async () => { await this.api('/dofbot/clear', {empty_slots: true}); this.log('已确认吃子槽清空，槽位从 0 重新计数', 'info'); await this.refreshDofbot(); });
     bind('btn-calibration-load', async () => { const data = await this.api('/dofbot/calibration'); document.getElementById('calibration-json').value = JSON.stringify(data.calibration, null, 2); this.log('标定文件已读入编辑器', 'info'); });
     bind('btn-calibration-save', async () => { await this.api('/dofbot/calibration', JSON.parse(document.getElementById('calibration-json').value)); this.log('参数校验通过并已保存', 'info'); await this.refreshDofbot(); });
-    bind('btn-refresh-cameras', () => this.loadLocalCameras());
+    bind('btn-refresh-cameras', () => this.loadLocalCameras(true));
     bind('btn-camera-check', async () => { if (!['camera', 'network'].includes(this.currentInputSource)) throw new Error('请先选择摄像头输入源'); const response = await fetch(`/api/camera/status?${this.cameraFrameQuery()}`); const data = await response.json(); this.log(JSON.stringify(data), data.camera_opened ? 'info' : 'warning'); });
-    bind('btn-disconnect-network', async () => { await this.api('/network_camera/disconnect', {}); this.networkCameraUrl = ''; this.stopLocalCameraFrames(); document.getElementById('input-source').value = 'virtual'; this.changeInputSource(); this.log('网络摄像头已断开', 'info'); });
+    bind('btn-disconnect-network', async () => { this.stopLocalCameraFrames(); await this.api('/network_camera/disconnect', {}); this.networkCameraUrl = ''; document.getElementById('input-source').value = 'virtual'; this.changeInputSource(); this.log('网络摄像头已断开', 'info'); });
     bind('btn-copy-fen', async () => { const input = document.getElementById('fen-display'); if (!input.value) throw new Error('暂无 FEN'); try { await navigator.clipboard.writeText(input.value); } catch (_) { input.select(); document.execCommand('copy'); } this.log('FEN 已复制', 'info'); });
     bind('btn-clear-log', async () => { document.getElementById('log-output').textContent = ''; });
     bind('btn-export-log', async () => { const url = URL.createObjectURL(new Blob([document.getElementById('log-output').innerText], {type: 'text/plain;charset=utf-8'})); const a = document.createElement('a'); a.href = url; a.download = 'chro_log.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
@@ -170,8 +170,8 @@ proto.pollDynamicRecognition = async function () {
     }
 };
 
-proto.loadLocalCameras = async function () {
-    await originalCameras.call(this);
+proto.loadLocalCameras = async function (forceRefresh = false) {
+    await originalCameras.call(this, forceRefresh);
     const select = document.getElementById('input-source');
     if (![...select.options].some(x => x.value === 'virtual')) select.add(new Option('虚拟棋盘（不使用摄像头）', 'virtual'), 0);
 };
