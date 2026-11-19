@@ -144,7 +144,9 @@ def inspect_frame(image: np.ndarray, config: dict) -> tuple:
             inside = bool(np.all(board_corners[:, 0]>=0) and np.all(board_corners[:, 0]<w) and np.all(board_corners[:, 1]>=0) and np.all(board_corners[:, 1]<h))
             polygon = board_corners[[0, 1, 3, 2]].astype(np.float32)
             valid_shape = bool(cv2.isContourConvex(polygon) and abs(cv2.contourArea(polygon))>100)
-            if errors.max()>config.get('max_reprojection_error_px', 3.0):
+            error_limit = config.get('max_reprojection_error_px', 3.0)
+            result['max_allowed_reprojection_error_px'] = error_limit
+            if errors.max() > error_limit:
                 reason = 'inconsistent_marker_geometry'
             elif not inside or not valid_shape:
                 reason = 'board_outside_image_or_degenerate'

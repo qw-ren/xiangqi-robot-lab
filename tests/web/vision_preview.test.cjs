@@ -50,11 +50,20 @@ test('an active game retains its formal board and drops old preview state', asyn
     assert.equal(JSON.stringify(ui.boardState), JSON.stringify(state.board_state));
 });
 
-test('rejected observations clear the visible prediction', () => {
+test('observations without a prediction clear the previous preview', () => {
     const { ui, preview } = page();
     ui.showVisionObservation(preview);
     ui.showVisionObservation({observation: {status: 'rejected', reasons: ['localization_failed']}});
     assert.equal(JSON.stringify(ui.boardState), '{}');
+});
+
+test('unknown and low-score cells do not hide the available preview', () => {
+    const { ui, preview, document } = page();
+    preview.observation = {status: 'rejected', reasons: ['unknown_cells', 'low_scores'],
+                           cells: [{piece: 'x'}]};
+    ui.showVisionObservation(preview);
+    assert.equal(JSON.stringify(ui.boardState), JSON.stringify({ '4,7': 'C' }));
+    assert.match(document.getElementById('vision-observation-status').textContent, /1 个未知格未绘制/);
 });
 
 test('stale live preview is not kept looking current', async () => {
