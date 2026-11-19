@@ -11,6 +11,7 @@
 | --- | --- |
 | Web 使用 ArUco 预览 | [web_simulation/README.md](web_simulation/README.md) |
 | 独立视觉工具 | [tools/vision/README.md](tools/vision/README.md) |
+| 树莓派机械臂示教工具 | [robot/arm_teaching/README.md](robot/arm_teaching/README.md) |
 | 视觉 / Web 接口 | [docs/project/VISION_INTERFACE.md](docs/project/VISION_INTERFACE.md) |
 | 目录与迁移清单 | [docs/project/STRUCTURE.md](docs/project/STRUCTURE.md) |
 | Git 协作与部署 | [docs/project/LOCAL_DEVELOPMENT.md](docs/project/LOCAL_DEVELOPMENT.md) |
@@ -34,7 +35,8 @@ core/ model/             底层 ONNX / 几何算法和单份模型
 web_simulation/          Flask、网页和 Web 与后端的衔接
 xiangqi_strategy/        队友的独立策略 / 串口服务（独立棋局）
 ai/ engine_assets/       引擎适配、公共权重及许可证
-robot/ firmware/         控制适配与固件
+robot/                   TCP/串口控制适配；arm_teaching/ 是独立的树莓派本地示教工具
+firmware/                固件
 xq_utils/                棋盘、FEN、坐标、规则校验
 tools/vision/            独立视觉命令
 tools/web/               Web 运行辅助工具

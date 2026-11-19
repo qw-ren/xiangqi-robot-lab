@@ -1,4 +1,6 @@
-# 树莓派64位系统依赖；本项目不依赖机械臂 SDK/GPIO。
+# Main application dependencies for Raspberry Pi. The standalone tool in
+# robot/arm_teaching additionally needs OS packages python3-smbus and
+# python3-rpi.gpio; it is not imported by the main application.
 Flask==3.1.3
 flask-cors==6.0.5
 cchess==1.25.5
