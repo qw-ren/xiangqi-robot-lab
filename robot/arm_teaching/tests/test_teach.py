@@ -18,12 +18,22 @@ class FakeArm:
     def __init__(self, values=None):
         self.values = list(values or [90, 90, 90, 90, 90])
         self.writes = []
+        self.torque_states = []
+        self.status_values = [0xDA] * 5
+        self.status_requests = []
 
     def Arm_serial_servo_read(self, servo_id):
         return self.values[servo_id - 1]
 
     def Arm_serial_servo_write(self, servo_id, angle, move_time):
         self.writes.append((servo_id, angle, move_time))
+
+    def Arm_serial_set_torque(self, onoff):
+        self.torque_states.append(onoff)
+
+    def Arm_ping_servo(self, servo_id):
+        self.status_requests.append(servo_id)
+        return self.status_values[servo_id - 1]
 
 
 class FakeGPIO:
@@ -95,6 +105,92 @@ class TeachControllerTests(unittest.TestCase):
             controller.execute("magnet toggle")
         self.assertEqual(len(gpio.calls), 2)
 
+    def test_torque_commands_disable_and_enable_all_bus_servos(self):
+        arm = FakeArm()
+        controller = TeachController(
+            arm,
+            PointStore(Path(tempfile.gettempdir()) / "unused-points.json"),
+            emit=lambda _: None,
+        )
+        controller.execute("torque off")
+        controller.execute("torque on")
+        self.assertEqual(arm.torque_states, [0, 1])
+
+    def test_invalid_torque_command_is_rejected(self):
+        arm = FakeArm()
+        controller = TeachController(
+            arm,
+            PointStore(Path(tempfile.gettempdir()) / "unused-points.json"),
+            emit=lambda _: None,
+        )
+        with self.assertRaises(TeachError):
+            controller.execute("torque toggle")
+        self.assertEqual(arm.torque_states, [])
+
+    def test_status_reports_normal_no_reply_and_combined_faults(self):
+        arm = FakeArm()
+        arm.status_values = [0xDA, 0x00, 0x25, 0x40, None]
+        output = []
+        controller = TeachController(
+            arm,
+            PointStore(Path(tempfile.gettempdir()) / "unused-points.json"),
+            emit=output.append,
+        )
+        controller.execute("status")
+        self.assertEqual(arm.status_requests, [1, 2, 3, 4, 5])
+        self.assertIn("0xDA: board reports normal", output[0])
+        self.assertIn("0x00: no servo reply", output[1])
+        self.assertIn("0x25: overload/stall protection, temperature fault, voltage fault", output[2])
+        self.assertIn("other status bits 0x40", output[3])
+        self.assertIn("UNAVAILABLE", output[4])
+        self.assertIn("does not read torque enable", output[-1])
+        self.assertEqual(arm.writes, [])
+        self.assertEqual(arm.torque_states, [])
+
+    def test_status_can_query_one_joint(self):
+        arm = FakeArm()
+        controller = TeachController(
+            arm,
+            PointStore(Path(tempfile.gettempdir()) / "unused-points.json"),
+            emit=lambda _: None,
+        )
+        controller.execute("status 3")
+        self.assertEqual(arm.status_requests, [3])
+        with self.assertRaises(TeachError):
+            controller.execute("status 6")
+        self.assertEqual(arm.status_requests, [3])
+
+    def test_status_continues_after_one_joint_query_fails(self):
+        class FailingStatusArm(FakeArm):
+            def Arm_ping_servo(self, servo_id):
+                self.status_requests.append(servo_id)
+                if servo_id == 2:
+                    raise OSError("simulated status query failure")
+                return self.status_values[servo_id - 1]
+
+        arm = FailingStatusArm()
+        output = []
+        controller = TeachController(
+            arm,
+            PointStore(Path(tempfile.gettempdir()) / "unused-points.json"),
+            emit=output.append,
+        )
+        controller.execute("status")
+        self.assertEqual(arm.status_requests, [1, 2, 3, 4, 5])
+        self.assertIn("ID 2 status=UNAVAILABLE", output[1])
+        self.assertIn("ID 5 status=0xDA", output[4])
+
+    def test_torque_report_does_not_claim_hardware_confirmation(self):
+        output = []
+        controller = TeachController(
+            FakeArm(),
+            PointStore(Path(tempfile.gettempdir()) / "unused-points.json"),
+            emit=output.append,
+        )
+        controller.execute("torque on")
+        self.assertIn("ON request sent", output[-1])
+        self.assertIn("not verified", output[-1])
+
     def test_set_accepts_extended_angles_without_a_step_limit(self):
         arm = FakeArm()
         controller = TeachController(arm, PointStore(Path(tempfile.gettempdir()) / "unused-points.json"), emit=lambda _: None)
@@ -106,13 +202,13 @@ class TeachControllerTests(unittest.TestCase):
         controller = TeachController(arm, PointStore(Path(tempfile.gettempdir()) / "unused-points.json"), emit=lambda _: None)
         controller.execute("set 5 281")
         controller.execute("jog 5 2")
-        self.assertEqual(arm.writes, [(5, 281.0, 500), (5, 281.0, 500)])
+        self.assertEqual(arm.writes, [(5, 281.0, 1000), (5, 281.0, 1000)])
 
     def test_jog_uses_current_logical_angle_without_a_delta_cap(self):
         arm = FakeArm([10, 0, 0, 0, 0])
         controller = TeachController(arm, PointStore(Path(tempfile.gettempdir()) / "unused-points.json"), emit=lambda _: None)
         controller.execute("jog 1 500")
-        self.assertEqual(arm.writes, [(1, 510.0, 500)])
+        self.assertEqual(arm.writes, [(1, 510.0, 1000)])
 
     def test_pose_sends_only_ids_one_through_five_in_order(self):
         arm = FakeArm()
@@ -155,6 +251,42 @@ class TeachControllerTests(unittest.TestCase):
             controller.execute("save extended_j5")
             self.assertEqual(store.points["extended_j5"], [90, 90, 90, 90, 281])
 
+    def test_delete_removes_point_from_memory_and_persisted_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "points.json"
+            store = PointStore(path)
+            store.save("c2a", [1, 2, 3, 4, 5])
+            store.save("c2g", [6, 7, 8, 9, 10])
+            controller = TeachController(FakeArm(), store, emit=lambda _: None)
+
+            controller.execute("delete c2a")
+            reopened = PointStore(path)
+
+        self.assertNotIn("c2a", store.points)
+        self.assertEqual(reopened.points, {"c2g": [6, 7, 8, 9, 10]})
+
+    def test_del_alias_removes_named_point(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = PointStore(Path(temp_dir) / "points.json")
+            store.save("g5g", [1, 2, 3, 4, 5])
+            controller = TeachController(FakeArm(), store, emit=lambda _: None)
+            controller.execute("del g5g")
+        self.assertEqual(store.points, {})
+
+    def test_delete_unknown_point_does_not_change_store(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "points.json"
+            store = PointStore(path)
+            store.save("c2a", [1, 2, 3, 4, 5])
+            original_file = path.read_text(encoding="utf-8")
+            controller = TeachController(FakeArm(), store, emit=lambda _: None)
+
+            with self.assertRaises(TeachError):
+                controller.execute("delete missing")
+
+            self.assertEqual(store.points, {"c2a": [1, 2, 3, 4, 5]})
+            self.assertEqual(path.read_text(encoding="utf-8"), original_file)
+
     def make_transfer_controller(self, arm=None, gpio=None):
         store = PointStore(Path(tempfile.gettempdir()) / "unused-points.json")
         store.points = {
@@ -186,6 +318,16 @@ class TeachControllerTests(unittest.TestCase):
             ("output", 21, FakeGPIO.LOW),
         ])
         self.assertEqual(sleep.call_count, 32)
+
+    def test_goto2_defaults_to_one_second_and_waits_between_stages(self):
+        controller, arm, gpio = self.make_transfer_controller()
+        with patch("teach.time.sleep") as sleep:
+            controller.execute("goto2 c2 g5")
+        self.assertEqual(len(arm.writes), 30)
+        self.assertTrue(all(item[2] == 1000 for item in arm.writes))
+        waits = [call.args[0] for call in sleep.call_args_list]
+        self.assertEqual(waits.count(1.15), 6)
+        self.assertEqual(waits.count(0.25), 2)
 
     def test_goto2_checks_all_points_before_moving_or_switching_magnet(self):
         controller, arm, gpio = self.make_transfer_controller()

@@ -1,2 +1,6 @@
 __pycache__/
 tests/__pycache__/
+
+# Per-arm calibration and atomic-save temporary files
+teach_points.json
+*.tmp
