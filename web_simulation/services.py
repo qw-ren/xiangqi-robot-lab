@@ -20,6 +20,15 @@ import config
 from vision.camera import normalize_camera_source, is_network_camera_source
 
 logger = logging.getLogger(__name__)
+camera_scan_lock = threading.Lock()  # 多个网页同时刷新时只允许一轮设备探测。
+
+
+def release_web_camera(manager):
+    """释放网页占用的设备并清空旧帧，避免断开后仍显示缓存画面。"""
+    manager.stop()
+    with manager._frame_lock:
+        manager.last_frame = None
+        manager.last_frame_time = 0.0
 
 
 def _app_module():
@@ -208,6 +217,20 @@ def list_available_cameras(max_cameras=6, refresh=False):
     if _app.camera_probe_cache is not None and not refresh:
         return _app.camera_probe_cache
 
+    # 探测进程不能与正在预览的进程同时占用同一个 USB 摄像头。
+    with camera_scan_lock, _app.camera_lock, _app.recognizer_lock:
+        if _app.camera_probe_cache is not None and not refresh:
+            return _app.camera_probe_cache
+        _app.active_stream_token += 1  # 旧 MJPEG 请求不得在扫描后重新打开旧设备。
+        manager = _app.recognizer.camera_manager if _app.recognizer else None
+        if manager is not None and not manager.is_network_source:
+            release_web_camera(manager)
+        return _scan_available_cameras(max_cameras)
+
+
+def _scan_available_cameras(max_cameras):
+    """调用方持有设备锁；扫描后按新的网页选择在下一次取帧时打开设备。"""
+    _app = _app_module()
     camera_names = get_windows_camera_names()
     cameras = []
     preferred_index = int(config.CAMERA_INDEX)
