@@ -75,3 +75,17 @@ test('stale live preview is not kept looking current', async () => {
     assert.equal(ui.latestVisionPreview, null);
     assert.match(document.getElementById('vision-observation-status').textContent, /过期/);
 });
+
+test('raw cells show in image order when board orientation is unknown', () => {
+    const { ui, document } = page();
+    ui.showVisionObservation({
+        observed_board_state: null,
+        observation: {
+            reasons: ['orientation_unknown', 'low_scores'],
+            cells: [{ row: 2, col: 7, piece: 'c', score: 0.4 },
+                    { row: 9, col: 0, piece: 'x' }]
+        }
+    });
+    assert.deepEqual(Object.entries(ui.boardState), [['7,2', 'c']]);
+    assert.match(document.getElementById('vision-observation-status').textContent, /按画面方向/);
+});

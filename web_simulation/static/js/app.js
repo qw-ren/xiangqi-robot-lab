@@ -777,10 +777,15 @@ class ChessSimulation {
         } else if (calibration.status === 'duplicate_marker_ids') {
             detail = ' · 画面有重复的标记 ID';
         }
-        const board = data.observed_board_state;
-        const unknown = (observation.cells || []).filter(cell => cell.piece === 'x').length;
+        const cells = observation.cells || [];
+        const useImageOrder = data.observed_board_state == null && cells.length > 0;
+        const board = useImageOrder
+            ? Object.fromEntries(cells.filter(cell => /^[KABNRCPkabnrcp]$/.test(cell.piece))
+                .map(cell => [`${cell.col},${cell.row}`, cell.piece]))
+            : data.observed_board_state;
+        const unknown = cells.filter(cell => cell.piece === 'x').length;
         const preview = board != null
-            ? `原始预测，未写入棋局${unknown ? `（${unknown} 个未知格未绘制）` : ''}`
+            ? `原始预测${useImageOrder ? '（按画面方向）' : ''}，未写入棋局${unknown ? `（${unknown} 个未知格未绘制）` : ''}`
             : '暂无可绘制的预测';
         const message = `ArUco · ${reasons.map(reason => labels[reason] || reason).join('；')}${detail} · ${preview}`;
         const panel = document.getElementById('vision-observation-status');

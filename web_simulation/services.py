@@ -33,7 +33,7 @@ def resolve_camera_source(camera_index=None, camera_source=None, camera_url=None
     if camera_url:
         return normalize_camera_source(camera_url)
 
-    if camera_source:
+    if camera_source is not None and camera_source != "":
         if camera_source == "network":
             if not _app.current_network_camera_url:
                 raise ValueError("尚未配置网络摄像头URL")
@@ -205,15 +205,21 @@ def list_available_cameras(max_cameras=6, refresh=False):
     """枚举有效设备；max_cameras为扫描上限，refresh=True重新扫描，返回实际可读设备列表。"""
     _app = _app_module()
 
-    if _app.camera_probe_cache is not None and not refresh:
-        return _app.camera_probe_cache
+    manager = _app.recognizer.camera_manager if _app.recognizer is not None else None
+    active = manager.camera_source if manager is not None and manager.is_opened() else None
+    if _app.camera_probe_cache and not refresh:
+        if not isinstance(active, int) or any(c["index"] == active for c in _app.camera_probe_cache):
+            return _app.camera_probe_cache
 
     camera_names = get_windows_camera_names()
     cameras = []
     preferred_index = int(config.CAMERA_INDEX)
 
     for index in range(max_cameras):
-        probe = probe_camera_index(index)
+        if index == active:
+            probe = {"width": manager.width, "height": manager.height}
+        else:
+            probe = probe_camera_index(index)
         if probe:
             name = camera_names[index] if index < len(camera_names) else None
             label = f"{name or '本地摄像头'}（索引 {index}）"
