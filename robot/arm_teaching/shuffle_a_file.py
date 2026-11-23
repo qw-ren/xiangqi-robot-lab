@@ -1,4 +1,4 @@
-"""Move one piece through nine random a–f file stops and back to its start."""
+"""Move one piece through nine random a–g file stops and back to its start."""
 
 import argparse
 from pathlib import Path
@@ -13,7 +13,7 @@ from .teach import (
 
 
 def shuffled_route(seed: int, start: str = "d5") -> List[str]:
-    candidates = [f"{col}{rank}" for col in "abcdef" for rank in range(10)
+    candidates = [f"{col}{rank}" for col in "abcdefg" for rank in range(10)
                   if f"{col}{rank}" != start]
     stops = random.Random(seed).sample(candidates, 9)
     return [start, *stops, start]
