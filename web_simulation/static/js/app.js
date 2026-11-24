@@ -805,12 +805,38 @@ class ChessSimulation {
         const observation = data.observation;
         const labels = {
             unconfirmed_geometry: '使用临时标定', orientation_unknown: '尚未指定棋盘朝向',
-            localization_failed: '定位失败，请检查四枚标记', unknown_cells: '存在未知格',
+            localization_failed: 'ArUco 定位失败', unknown_cells: '存在未知格',
+            rtmpose_fallback: '来源为 RTMPose 备用预测',
             low_scores: '存在低分格', warming_up: '正在累计连续帧', no_prediction: '暂无分类结果',
             review_required: '仍需确认，连续稳定不代表分类准确'
         };
         const reasons = observation.reasons.length ? observation.reasons : ['review_required'];
-        const message = `ArUco · ${reasons.map(reason => labels[reason] || reason).join('；')} · 原始预测，未写入棋局`;
+        const calibration = observation.calibration || {};
+        const missing = calibration.missing_ids || [];
+        const detected = calibration.detected_ids || [];
+        let detail = '';
+        if (missing.length) detail = ` · 已检测 ${detected.join(', ') || '无'}，缺少 ${missing.join(', ')}`;
+        else if (calibration.status === 'marker_to_board_geometry_missing_or_unconfirmed') {
+            detail = ' · 标记已找到，请检查标定配置及临时标定启动参数';
+        } else if (calibration.status === 'inconsistent_marker_geometry') {
+            const limit = calibration.max_allowed_reprojection_error_px ?? 3.0;
+            detail = ` · 已检测 ID ${detected.join(', ')}；几何误差 ${calibration.max_reprojection_error_px.toFixed(2)} px，阈值 ${limit.toFixed(2)} px`;
+        } else if (calibration.status === 'board_outside_image_or_degenerate') {
+            detail = ' · 棋盘投影越界或四角无效';
+        } else if (calibration.status === 'duplicate_marker_ids') {
+            detail = ' · 画面有重复的标记 ID';
+        }
+        const cells = observation.cells || [];
+        const useImageOrder = data.observed_board_state == null && cells.length > 0;
+        const board = useImageOrder
+            ? Object.fromEntries(cells.filter(cell => /^[KABNRCPkabnrcp]$/.test(cell.piece))
+                .map(cell => [`${cell.col},${cell.row}`, cell.piece]))
+            : data.observed_board_state;
+        const unknown = cells.filter(cell => cell.piece === 'x').length;
+        const preview = board != null
+            ? `原始预测${useImageOrder ? '（按画面方向）' : ''}，未写入棋局${unknown ? `（${unknown} 个未知格未绘制）` : ''}`
+            : '暂无可绘制的预测';
+        const message = `ArUco · ${reasons.map(reason => labels[reason] || reason).join('；')}${detail} · ${preview}`;
         const panel = document.getElementById('vision-observation-status');
         if (panel) panel.textContent = message;
         if (message !== this.lastVisionMessage) {
@@ -818,11 +844,10 @@ class ChessSimulation {
             this.lastVisionMessage = message;
         }
         if (this.isGameRunning) return;
-        const board = observation.status === 'rejected' ? {} : (data.observed_board_state || {});
-        this.boardState = board;
+        this.boardState = board || {};
         this.drawVisualBoard();
-        this.drawBoard(board);
-        document.getElementById('piece-count').textContent = Object.keys(board).length;
+        this.drawBoard(this.boardState);
+        document.getElementById('piece-count').textContent = Object.keys(this.boardState).length;
         document.getElementById('fen-display').value = '';
     }
 

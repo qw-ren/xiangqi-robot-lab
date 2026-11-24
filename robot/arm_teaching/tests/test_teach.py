@@ -11,6 +11,8 @@ from teach import (  # noqa: E402
     PointStore,
     TeachController,
     TeachError,
+    quadrant_approach,
+    taught_squares,
 )
 
 
@@ -327,7 +329,8 @@ class TeachControllerTests(unittest.TestCase):
         self.assertTrue(all(item[2] == 1000 for item in arm.writes))
         waits = [call.args[0] for call in sleep.call_args_list]
         self.assertEqual(waits.count(1.15), 6)
-        self.assertEqual(waits.count(0.25), 2)
+        self.assertEqual(waits.count(1.0), 1)
+        self.assertEqual(waits.count(0.25), 1)
 
     def test_goto2_checks_all_points_before_moving_or_switching_magnet(self):
         controller, arm, gpio = self.make_transfer_controller()
@@ -366,6 +369,89 @@ class TeachControllerTests(unittest.TestCase):
             controller.execute("goto2 c2 g5 0")
         self.assertEqual(arm.writes, [])
         self.assertEqual(len(gpio.calls), 2)
+
+    def test_integrated_transfer_requires_park_before_any_write(self):
+        controller, arm, gpio = self.make_transfer_controller()
+        with self.assertRaisesRegex(TeachError, "park"):
+            controller.transfer("c2", "g5", 1000, return_to_park=True)
+        self.assertEqual(arm.writes, [])
+        self.assertEqual(len(gpio.calls), 2)
+
+    def test_transfer_to_capture_slot_releases_piece_and_parks(self):
+        controller, arm, gpio = self.make_transfer_controller()
+        controller.store.points.update(capturea=[50] * 5, captureg=[60] * 5, park=[70] * 5)
+        with patch("teach.time.sleep"):
+            controller.execute("goto2 c2 capture")
+        self.assertEqual([group[1] for group in arm.writes[::5]],
+                         [10, 20, 10, 50, 60, 50, 70])
+        self.assertEqual(gpio.calls[-1], ("output", 21, FakeGPIO.LOW))
+
+    def test_capture_transfer_requires_both_slot_poses_before_any_write(self):
+        controller, arm, _ = self.make_transfer_controller()
+        controller.store.points["capturea"] = [50] * 5
+        with self.assertRaisesRegex(TeachError, "captureg"):
+            controller.execute("goto2 c2 capture")
+        self.assertEqual(arm.writes, [])
+
+    def test_transfer_ends_at_registered_park_with_magnet_off(self):
+        controller, arm, gpio = self.make_transfer_controller()
+        controller.store.points["park"] = [50] * 5
+        with patch("teach.time.sleep"):
+            controller.execute("goto2 c2 g5")
+        self.assertEqual([group[1] for group in arm.writes[::5]],
+                         [10, 20, 10, 30, 40, 30, 50])
+        self.assertEqual(gpio.calls[-1], ("output", 21, FakeGPIO.LOW))
+
+    def test_batch_teaching_saves_grab_poses_and_leaves_torque_off(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = PointStore(Path(directory) / "points.json")
+            arm = FakeArm()
+            controller = TeachController(arm, store, Electromagnet(gpio=FakeGPIO()),
+                                         emit=lambda _: None)
+            answers = iter(["OFF", "", "q"])
+            with patch.object(controller, "read_pose") as read:
+                read.return_value = [1, 2, 3, 4, 5]
+                controller.teach_points(["c2", "g5"], prompt=lambda _: next(answers))
+            self.assertEqual(set(PointStore(store.path).points), {"c2g"})
+            self.assertEqual(arm.torque_states, [0])
+
+    def test_quadrants_include_center_file_on_left(self):
+        self.assertEqual(quadrant_approach("e4"), "approach_red_left")
+        self.assertEqual(quadrant_approach("f4"), "approach_red_right")
+        self.assertEqual(quadrant_approach("e5"), "approach_black_left")
+        self.assertEqual(quadrant_approach("f5"), "approach_black_right")
+
+    def test_shared_approaches_enable_reused_grab_points_and_require_target_region(self):
+        controller, arm, _ = self.make_transfer_controller()
+        points = controller.store.points
+        del points["c2a"], points["g5a"]
+        points["approach_red_left"] = [50] * 5
+        self.assertEqual(taught_squares(points), ["c2"])
+        with self.assertRaisesRegex(TeachError, "approach_black_right"):
+            controller.execute("goto2 c2 g5")
+        self.assertEqual(arm.writes, [])
+        points["approach_black_right"] = [60] * 5
+        with patch("teach.time.sleep"):
+            controller.execute("goto2 c2 g5")
+        self.assertEqual([group[1] for group in arm.writes[::5]],
+                         [50, 20, 50, 60, 40, 60])
+
+    def test_transfer_within_one_quadrant_reuses_approach_without_duplicate_motion(self):
+        controller, arm, _ = self.make_transfer_controller()
+        del controller.store.points["c2a"]
+        controller.store.points.update(approach_red_left=[50] * 5, e4g=[70] * 5)
+        with patch("teach.time.sleep"):
+            controller.execute("goto2 c2 e4")
+        self.assertEqual([group[1] for group in arm.writes[::5]], [50, 20, 50, 70, 50])
+
+    def test_numbered_capture_uses_individual_approach_and_parks(self):
+        controller, arm, _ = self.make_transfer_controller()
+        controller.store.points.update(approach_red_left=[50] * 5, capture16a=[60] * 5,
+                                       capture16g=[70] * 5, park=[80] * 5)
+        with patch("teach.time.sleep"):
+            controller.execute("goto2 c2 capture16")
+        self.assertEqual([group[1] for group in arm.writes[::5]],
+                         [10, 20, 10, 60, 70, 60, 80])
 
 
 if __name__ == "__main__":

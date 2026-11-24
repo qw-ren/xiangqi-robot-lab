@@ -50,11 +50,20 @@ test('an active game retains its formal board and drops old preview state', asyn
     assert.equal(JSON.stringify(ui.boardState), JSON.stringify(state.board_state));
 });
 
-test('rejected observations clear the visible prediction', () => {
+test('observations without a prediction clear the previous preview', () => {
     const { ui, preview } = page();
     ui.showVisionObservation(preview);
     ui.showVisionObservation({observation: {status: 'rejected', reasons: ['localization_failed']}});
     assert.equal(JSON.stringify(ui.boardState), '{}');
+});
+
+test('unknown and low-score cells do not hide the available preview', () => {
+    const { ui, preview, document } = page();
+    preview.observation = {status: 'rejected', reasons: ['unknown_cells', 'low_scores'],
+                           cells: [{piece: 'x'}]};
+    ui.showVisionObservation(preview);
+    assert.equal(JSON.stringify(ui.boardState), JSON.stringify({ '4,7': 'C' }));
+    assert.match(document.getElementById('vision-observation-status').textContent, /1 个未知格未绘制/);
 });
 
 test('stale live preview is not kept looking current', async () => {
@@ -65,4 +74,18 @@ test('stale live preview is not kept looking current', async () => {
     await ui.syncFullState();
     assert.equal(ui.latestVisionPreview, null);
     assert.match(document.getElementById('vision-observation-status').textContent, /过期/);
+});
+
+test('raw cells show in image order when board orientation is unknown', () => {
+    const { ui, document } = page();
+    ui.showVisionObservation({
+        observed_board_state: null,
+        observation: {
+            reasons: ['orientation_unknown', 'low_scores'],
+            cells: [{ row: 2, col: 7, piece: 'c', score: 0.4 },
+                    { row: 9, col: 0, piece: 'x' }]
+        }
+    });
+    assert.deepEqual(Object.entries(ui.boardState), [['7,2', 'c']]);
+    assert.match(document.getElementById('vision-observation-status').textContent, /按画面方向/);
 });

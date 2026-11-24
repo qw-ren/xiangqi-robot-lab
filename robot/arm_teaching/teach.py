@@ -2,6 +2,7 @@
 """Interactive five-servo teaching over the Yahboom extension board."""
 
 import argparse
+from contextlib import contextmanager
 import json
 import math
 import os
@@ -17,11 +18,51 @@ DEFAULT_DURATION_MS = 1000
 WRITE_GAP_SECONDS = 0.01
 ELECTROMAGNET_GPIO = 21
 MOVE_SETTLE_SECONDS = 0.15
-MAGNET_SETTLE_SECONDS = 0.25
+MAGNET_PICKUP_SECONDS = 1.0
+MAGNET_RELEASE_SECONDS = 0.25
+APPROACH_POINTS = ("approach_red_left", "approach_red_right",
+                   "approach_black_left", "approach_black_right")
+CAPTURE_SLOTS = tuple(f"capture{index}" for index in range(1, 17))
+BOARD_SQUARES = tuple(f"{col}{rank}" for col in "abcdefghi" for rank in range(10))
+
+
+def capture_poses(slot: str) -> tuple:
+    return slot + "a", slot + "g"
+
+
+def quadrant_approach(square: str) -> str:
+    """Use ICCS ranks and a–i column order. The center file e belongs to a–e."""
+    return APPROACH_POINTS[2 * (int(square[1]) >= 5) + (square[0] >= "f")]
+
+
+def square_approach(square: str, points: dict) -> str:
+    approach = square + "a"
+    shared = quadrant_approach(square)
+    if approach in points or not any(name in points for name in APPROACH_POINTS):
+        return approach
+    return shared
+
+
+def taught_squares(points: dict):
+    return [square for square in BOARD_SQUARES
+            if square + "g" in points and square_approach(square, points) in points]
 
 
 class TeachError(Exception):
     pass
+
+
+@contextmanager
+def arm_lock():
+    """Keep the teaching console and integrated runner off the bus simultaneously."""
+    import fcntl
+
+    with open("/tmp/xiangqi-arm-one-move.lock", "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise TeachError("The arm is already reserved by another session.") from exc
+        yield
 
 
 class Electromagnet:
@@ -110,13 +151,18 @@ class PointStore:
                 raise TeachError("Cannot load point file {}: {}".format(self.path, exc))
 
     def save(self, name, pose):
-        name = point_name(name)
-        values = [number(value, "Angle") for value in pose]
-        if len(values) != 5:
-            raise TeachError("A saved pose must contain five angles.")
+        self.save_many({name: pose})
 
+    def save_many(self, poses):
         updated = dict(self.points)
-        updated[name] = values
+        for name, pose in poses.items():
+            values = [number(value, "Angle") for value in pose]
+            if len(values) != 5:
+                raise TeachError("A saved pose must contain five angles.")
+            updated[point_name(name)] = values
+        self._write(updated)
+
+    def _write(self, updated):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = None
         try:
@@ -142,22 +188,7 @@ class PointStore:
 
         updated = dict(self.points)
         del updated[name]
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", suffix=".tmp",
-                    dir=str(self.path.parent), delete=False) as stream:
-                temporary = stream.name
-                json.dump({"version": 1, "points": updated}, stream,
-                          indent=2, allow_nan=False)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, str(self.path))
-        finally:
-            if temporary and os.path.exists(temporary):
-                os.unlink(temporary)
-        self.points = updated
+        self._write(updated)
 
 
 class TeachController:
@@ -206,38 +237,91 @@ class TeachController:
         self.send_pose(self.store.points[name], move_time)
         time.sleep(move_time / 1000.0 + MOVE_SETTLE_SECONDS)
 
-    def transfer(self, source, destination, move_time):
+    def transfer(self, source, destination, move_time, return_to_park=False):
         source = self.board_coordinate(source)
-        destination = self.board_coordinate(destination)
-        point_names = (
-            source + "a", source + "g", destination + "a", destination + "g")
-        missing = [name for name in point_names if name not in self.store.points]
+        destination = str(destination).lower()
+        source_approach = square_approach(source, self.store.points)
+        if destination == "capture" or destination in CAPTURE_SLOTS:
+            destination_approach, destination_grab = capture_poses(destination)
+        else:
+            destination = self.board_coordinate(destination)
+            destination_approach = square_approach(destination, self.store.points)
+            destination_grab = destination + "g"
+        point_names = (source_approach, source + "g", destination_approach, destination_grab)
+        if return_to_park:
+            point_names += ("park",)
+        missing = [name for name in dict.fromkeys(point_names) if name not in self.store.points]
         if missing:
             raise TeachError("Transfer not started; missing points: {}".format(
                 ", ".join(missing)))
 
         self.emit("Transfer {} -> {} ({} ms per move).".format(
             source, destination, move_time))
-        self.move_to_point(source + "a", move_time)
+        self.move_to_point(source_approach, move_time)
         self.move_to_point(source + "g", move_time)
 
         magnet_on = False
         try:
             self.set_magnet(True)
             magnet_on = True
-            time.sleep(MAGNET_SETTLE_SECONDS)
-            self.move_to_point(source + "a", move_time)
-            self.move_to_point(destination + "a", move_time)
-            self.move_to_point(destination + "g", move_time)
+            time.sleep(MAGNET_PICKUP_SECONDS)
+            self.move_to_point(source_approach, move_time)
+            if destination_approach != source_approach:
+                self.move_to_point(destination_approach, move_time)
+            self.move_to_point(destination_grab, move_time)
             self.set_magnet(False)
             magnet_on = False
-            time.sleep(MAGNET_SETTLE_SECONDS)
-            self.move_to_point(destination + "a", move_time)
+            time.sleep(MAGNET_RELEASE_SECONDS)
+            self.move_to_point(destination_approach, move_time)
+            if return_to_park:
+                self.move_to_point("park", move_time)
         except BaseException:
             if magnet_on:
                 self.set_magnet(False)
             raise
         self.emit("Transfer complete: {} -> {}.".format(source, destination))
+
+    def teach_points(self, targets, prompt=input):
+        """Record the requested poses in one torque-off session."""
+        poses_to_teach = {}
+        for target in (target.lower() for target in targets):
+            if target == "approaches":
+                poses_to_teach.update(dict.fromkeys(APPROACH_POINTS, "shared approach"))
+            elif target in ("capture", "captures") or target in CAPTURE_SLOTS:
+                slots = CAPTURE_SLOTS if target == "captures" else (target,)
+                for slot in slots:
+                    approach, release = capture_poses(slot)
+                    poses_to_teach[approach] = "approach above the capture slot"
+                    poses_to_teach[release] = "release at the capture slot"
+            elif (re.fullmatch(r"[a-i][0-9][ag]", target)
+                  or (target[:-1] in CAPTURE_SLOTS and target[-1:] in ("a", "g"))):
+                poses_to_teach[target] = "approach" if target.endswith("a") else "grab/place"
+            elif target in APPROACH_POINTS:
+                poses_to_teach[target] = "shared approach"
+            elif target == "park":
+                poses_to_teach[target] = "clear of the board and all markers"
+            else:
+                poses_to_teach[self.board_coordinate(target) + "g"] = "grab/place"
+        if prompt("Support the arm, then type OFF to release torque: ").strip() != "OFF":
+            return
+        self.set_magnet(False)
+        self.set_torque(False)
+        try:
+            for name, position in poses_to_teach.items():
+                if name in self.store.points and prompt(f"Overwrite {name}? [y/N] ").strip().lower() != "y":
+                    continue
+                while True:
+                    action = prompt(f"Position {name} ({position}) then Enter, or q to stop: ").strip().lower()
+                    if action == "q":
+                        return
+                    pose = self.read_pose()
+                    if all(value is not None for value in pose):
+                        self.store.save(name, pose)
+                        self.emit(f"Saved {name}.")
+                        break
+                    self.emit("Incomplete feedback. Hold position and retry.")
+        finally:
+            self.emit("Torque remains off. Support the arm before requesting torque on.")
 
     @staticmethod
     def board_coordinate(value):
@@ -317,6 +401,22 @@ class TeachController:
             self.set_torque(action == "on")
         elif command == "read" and len(args) == 1:
             self.read_pose()
+        elif command == "teach" and len(args) >= 2:
+            self.teach_points(args[1:])
+        elif command == "coverage" and len(args) == 1:
+            complete = taught_squares(self.store.points)
+            self.emit("Complete ({}/90): {}; park: {}".format(
+                len(complete), " ".join(complete) or "-",
+                "saved" if "park" in self.store.points else "missing"))
+            for name in APPROACH_POINTS:
+                self.emit(f"{name}: {'saved' if name in self.store.points else 'missing'}")
+            for suffix, label in (("a", "Square approaches"), ("g", "Square grab/place")):
+                missing = [square + suffix for square in BOARD_SQUARES
+                           if square + suffix not in self.store.points]
+                self.emit(f"{label} ({90 - len(missing)}/90), missing: {' '.join(missing) or '-'}")
+            missing = [name for slot in CAPTURE_SLOTS for name in capture_poses(slot)
+                       if name not in self.store.points]
+            self.emit(f"Missing numbered capture poses: {' '.join(missing) or '-'}")
         elif command == "status" and len(args) in (1, 2):
             servos = (servo_id(args[1]),) if len(args) == 2 else JOINT_IDS
             self.read_status(servos)
@@ -354,7 +454,8 @@ class TeachController:
             move_time = duration(args[3] if len(args) == 4 else None)
             if move_time == 0:
                 raise TeachError("goto2 needs a nonzero duration so it can wait for each move.")
-            self.transfer(args[1], args[2], move_time)
+            self.transfer(args[1], args[2], move_time,
+                          return_to_park="park" in self.store.points)
         elif command == "points" and len(args) == 1:
             if not self.store.points:
                 self.emit("No saved points.")
@@ -370,6 +471,13 @@ HELP = """Commands (angles are Arm_Lib logical degrees):
   magnet on / magnet off       Switch electromagnet (BCM GPIO21)
   torque off / torque on       Request torque off/on for all bus servos
   read                         Read IDs 1..5
+  teach a0a b9a                Record individual square approach poses
+  teach a0g b9g                Record individual grab/place poses (a0 and b9 also work)
+  teach capture1 capture2      Record both poses for each named slot (capture1..capture16)
+  teach capture1a capture1g    Record individual capture poses
+  teach captures               Record all 16 numbered slots in order
+  teach park                   Record the parking pose
+  coverage                     Show missing square, capture and park poses
   status [ID]                  Query board-reported servo status (all or one)
   jog ID DELTA [MS]             Relative move; no angle-step cap
   set ID ANGLE [MS]             Set one joint to an absolute angle
@@ -378,6 +486,7 @@ HELP = """Commands (angles are Arm_Lib logical degrees):
   delete NAME                   Delete one saved point (alias: del)
   goto NAME [MS]                 Replay a saved pose
   goto2 FROM TO [MS]             Move one piece, e.g. goto2 c2 g5
+  goto2 FROM capture1 [MS]       Move one piece to the specified numbered slot
   points                        List saved poses
   help                          Show commands
   quit                          Exit
@@ -387,8 +496,8 @@ Torque requests affect the whole bus-servo group. Torque off may let the arm
 drop. Status reports communication/faults, not actual torque enable or arrival.
 The driver extends the vendor angle mapping and clamps only the encoded
 position to the extension-board command range 96..4000. Read feedback is
-displayed without angle clamping. goto2 moves through the saved 'a' (approach)
-and 'g' (grab/place) poses for each coordinate, switches the magnet, and waits
+displayed without angle clamping. goto2 prefers the square approach and uses saved
+'g' (grab/place) poses for each coordinate, switches the magnet, and waits
 for every timed move to finish."""
 
 
@@ -437,4 +546,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        with arm_lock():
+            sys.exit(main())
+    except TeachError as exc:
+        sys.exit(str(exc))

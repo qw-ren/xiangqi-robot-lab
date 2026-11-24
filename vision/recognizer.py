@@ -61,6 +61,7 @@ class BoardRecognizer:
             fps=fps or CAMERA_FPS,
         )
         self.vision_backend = vision_backend or config.VISION_BACKEND
+        self._model_paths = (pose_model_path, classifier_model_path)
         self.last_observation = None
         if self.vision_backend == "aruco":
             from .aruco import ArucoRecognizer
@@ -185,8 +186,25 @@ class BoardRecognizer:
             raise ValueError("observation API requires aruco backend")
         if image is None:
             image = self.camera_manager.capture_frame()
-        self.last_observation = self.aruco.observe(image)
+        self.last_observation = self.aruco.observe(image, fallback=self._fallback_prediction)
         return self.last_observation
+
+    def _fallback_prediction(self, image: np.ndarray):
+        """Run the legacy prediction on the same frame, without a score gate."""
+        if self.detector is None:
+            self.detector = ChessboardDetector(*self._model_paths)
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        height, width = rgb.shape[:2]
+        max_width = int(os.getenv("CHRO_RECOGNITION_MAX_WIDTH", "960"))
+        if width > max_width:
+            rgb = cv2.resize(rgb, (max_width, max(1, int(height * max_width / width))),
+                             interpolation=cv2.INTER_AREA)
+        try:
+            _, _, layout, scores, _ = self.detector.detect_and_classify(rgb, force_pose=True)
+        except RuntimeError:
+            logger.exception("RTMPose fallback unavailable")
+            return None, None
+        return layout, scores
 
     def recognize_dynamic_frame(self, image: np.ndarray = None):
         if self.vision_backend == "aruco":

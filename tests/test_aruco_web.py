@@ -81,11 +81,24 @@ class ArucoWebTests(unittest.TestCase):
         with patch("vision.aruco.inspect_frame", return_value=(self.geometry, None, None)):
             self.assertEqual(self.recognizer.recognize_observation(self.image)["board_state"], {"4,7": "C"})
         with patch("vision.aruco.inspect_frame", return_value=({"board_calibration_success": False}, None, None)), \
+                patch.object(self.recognizer, "_fallback_prediction", return_value=(None, None)), \
                 patch.object(self.recognizer.aruco._model, "pred", side_effect=AssertionError("must not classify")):
             invalid = self.recognizer.recognize_observation(self.image)
         self.assertEqual(invalid["status"], "rejected")
         self.assertIsNone(invalid["board_state"])
         self.assertEqual(invalid["consecutive_frames"], 0)
+
+    def test_low_score_fallback_is_visible_without_updating_game(self):
+        scores = [[0.2] * 9 for _ in range(10)]
+        with patch("vision.aruco.inspect_frame", return_value=({"board_calibration_success": False}, None, None)), \
+                patch.object(self.recognizer, "_fallback_prediction", return_value=(self.layout, scores)) as fallback:
+            observation = self.recognizer.recognize_observation(self.image)
+        fallback.assert_called_once_with(self.image)
+        self.assertEqual(observation["status"], "provisional")
+        self.assertEqual(observation["source"], "rtmpose_fallback")
+        self.assertEqual(observation["board_state"], {"4,7": "C"})
+        self.assertIn("low_scores", observation["reasons"])
+        self.assertFalse(observation["can_update_game"])
 
     def test_accepted_board_api_does_not_leak_raw_aruco_prediction(self):
         with patch("vision.aruco.inspect_frame", return_value=(self.geometry, None, None)):

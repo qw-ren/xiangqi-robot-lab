@@ -57,7 +57,8 @@ class ChessboardDetector:
         if self._core_detector is not None and hasattr(self._core_detector, "reset_board_cache"):
             self._core_detector.reset_board_cache()
 
-    def detect_and_classify(self, image_rgb: np.ndarray, draw_debug: bool = False) -> Tuple[
+    def detect_and_classify(self, image_rgb: np.ndarray, draw_debug: bool = False,
+                            force_pose: bool = False) -> Tuple[
         Optional[np.ndarray],
         Optional[np.ndarray],
         Optional[str],
@@ -74,6 +75,7 @@ class ChessboardDetector:
                 return self._core_detector.pred_detect_board_and_classifier(
                     image_rgb,
                     draw_debug=draw_debug,
+                    **({"force_pose": True} if force_pose else {}),
                 )
             except Exception as exc:
                 logger.error("Detect/classify failed: %s", exc, exc_info=True)

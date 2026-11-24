@@ -44,8 +44,8 @@ quit
 ```
 
 `goto2 FROM TO [MS]` performs the verified piece-transfer sequence. For
-`goto2 c2 g5`, the program first checks that `c2a`, `c2g`, `g5a` and `g5g`
-are all saved. It then runs:
+`goto2 c2 g5`, the program first checks the approach and grab/place pose
+at both ends. With a legacy point file the route is:
 
 ```text
 c2a -> c2g -> magnet on -> c2a -> g5a -> g5g
@@ -64,10 +64,7 @@ Point names use lowercase board coordinates: columns `a` through `i`, rows
 `0` through `9`, plus `a`/`g`. Save the four example poses with:
 
 ```text
-save c2a
-save c2g
-save g5a
-save g5g
+teach approaches c2 g5
 ```
 
 The existing manual commands remain available for calibration and
@@ -114,6 +111,107 @@ Angles use the vendor Arm_Lib logical convention, extended linearly beyond its d
 `pose`, `goto` and `goto2` send the five targets in ID order 1, 2, 3, 4, 5. Each uses the same movement duration, with a 10 ms pause between writes. This creates about a 40 ms start offset from the first to fifth command, plus I2C transfer time. For manual movement `MS` is 0..65535; 0 asks the board to use its fastest setting. `goto2` requires a nonzero duration to wait between route stages.
 
 The driver converts each logical angle to the vendor's per-servo position code, then clamps the outgoing code to the extension-board range 96..4000. Read feedback is not angle-clamped and is converted back using the inverse mapping. ID 6 is rejected by the driver.
+
+## Batch teaching and parking
+
+On the Pi, use the release's teaching console with the existing point file:
+
+```bash
+python3 robot/arm_teaching/teach.py --state "$HOME/chess_arm/teach_points.json"
+```
+
+```text
+coverage
+teach a2a a3a b3a
+teach a2g a3g b3g park
+torque on
+goto park
+```
+
+Use ICCS coordinates with the red home rank at 0 and the black home rank at 9.
+The teaching prompt asks you to support the arm and type `OFF` before releasing
+torque. Press Enter at each pose to read and save the five angles. Use the `a`
+suffix for approach and `g` for grab/place. Incomplete feedback can be retried, and previously saved
+poses require explicit overwrite confirmation. Type `q` to stop teaching.
+Support the arm before requesting `torque on`.
+
+| Approach name | Files | Ranks |
+| --- | --- | --- |
+| `approach_red_left` | a–e | 0–4 |
+| `approach_red_right` | f–i | 0–4 |
+| `approach_black_left` | a–e | 5–9 |
+| `approach_black_right` | f–i | 5–9 |
+
+Full-game play requires all 90 individual approaches and grab/place poses.
+Existing `<square>g` entries are reused. For manual transfers and the one-move
+trial, a saved individual approach takes priority over a shared region pose.
+Use `coverage` to find missing individual poses.
+
+Record `park` with the arm and tool clear of the board, all four markers and the
+camera view. Check the route from the destination approach pose to `park`
+before using automatic play. With `park` present, `goto2` releases the piece,
+rises to the destination approach pose and then moves to `park`.
+
+## Integrated one-move trial
+
+### Capture storage for full-game trials
+
+Run `teach captures` to record all 16 off-board slots in order, or use a
+batch such as `teach capture1 capture2`. Each slot has an approach and release
+pose, e.g. `capture1a` and `capture1g`. Use `coverage` to check the entries.
+After enabling torque, test with `goto2 h0 capture1`.
+
+The full-game runner requires all 32 poses. On each black capture the arm
+uses the next slot in order and parks. After vision confirms the board
+target is clear, it moves the black piece to that square and parks again.
+Clear the capture area before starting a new game. For `--resume-moves` the
+next slot is calculated from the black captures in the supplied history. Use
+`--capture-start N` when the physical next free slot differs from the default.
+
+### Full-game vision and optional Web preview
+
+The full-game runner starts and stops its local camera and vision endpoint in
+the same process. Run it on the Pi from the deployment directory:
+
+```bash
+export PYTHONPATH="$PWD/.runtime-deps:$HOME/chch-vision-deps"
+CHRO_ARUCO_ALLOW_APPROXIMATE=1 python3 -u tools/vision/full_game_arm_trial.py \
+  --engine "$HOME/pikafish/2025-06-23/pikafish" --execute
+```
+
+Choose `1` for the standard opening or `2` to use the current board. For an
+endgame, choose the side to move. The runner reads the current layout from
+three matching ArUco observations, then the human plays red and the arm
+plays black. Use `--mode endgame --turn red` to supply those choices in the
+command. The game ends with a winner announcement when the side to move is
+checkmated or stalemated.
+
+An optional Web UI forwards the camera preview and observations to the game
+process on port 5001:
+
+```bash
+PYTHONPATH="$PWD/.runtime-deps:$HOME/chch-vision-deps" \
+  CHRO_SKIP_STARTUP_PROMPT=1 CHRO_VISION_SERVICE_URL=http://127.0.0.1:5001 \
+  python3 -u web_simulation/app.py
+```
+
+The one-move trial defaults to the legacy Web endpoint. Run it separately
+from the deployment directory:
+
+```bash
+export PYTHONPATH="$PWD/.runtime-deps:$HOME/chch-vision-deps"
+python3 -u tools/vision/one_move_arm_trial.py --arm-dir "$HOME/chess_arm" --check
+python3 -u tools/vision/one_move_arm_trial.py --arm-dir "$HOME/chess_arm" --seconds 240
+```
+
+Start with the standard opening and the arm already parked. After the opening
+is confirmed, play `c3c4` and withdraw your hand from the arm's reach. The runner
+uses three matching ArUco frames, checks the move with the shared rules,
+chooses a reachable non-capture reply, runs the teaching controller, and
+verifies the full expected board after parking. With several reachable replies
+it uses coordinate order. A missing `park` blocks the trial before hardware
+initialization. The teaching console and runner share an exclusive arm lock.
+The runner exits after one reply, or on timeout or any hardware error.
 
 ## Offline tests
 

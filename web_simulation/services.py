@@ -42,7 +42,7 @@ def resolve_camera_source(camera_index=None, camera_source=None, camera_url=None
     if camera_url:
         return normalize_camera_source(camera_url)
 
-    if camera_source:
+    if camera_source is not None and camera_source != "":
         if camera_source == "network":
             if not _app.current_network_camera_url:
                 raise ValueError("尚未配置网络摄像头URL")
@@ -217,7 +217,6 @@ def list_available_cameras(max_cameras=6, refresh=False):
     if _app.camera_probe_cache is not None and not refresh:
         return _app.camera_probe_cache
 
-    # 探测进程不能与正在预览的进程同时占用同一个 USB 摄像头。
     with camera_scan_lock, _app.camera_lock, _app.recognizer_lock:
         if _app.camera_probe_cache is not None and not refresh:
             return _app.camera_probe_cache

@@ -5,7 +5,7 @@
 统一为 OpenCV 可识别的形式，并为 HTTP 端点生成一组可尝试的取帧 URL。
 """
 
-from typing import Union
+from typing import List, Union
 from urllib.parse import urlparse, urlunparse
 
 CameraSource = Union[int, str]
@@ -50,7 +50,7 @@ def is_network_camera_source(source: CameraSource) -> bool:
     return isinstance(normalize_camera_source(source), str)
 
 
-def build_http_camera_candidate_urls(source: str) -> list[str]:
+def build_http_camera_candidate_urls(source: str) -> List[str]:
     """Return HTTP URLs to try for fetching one frame."""
     normalized = str(normalize_camera_source(source))
     parsed = urlparse(normalized)

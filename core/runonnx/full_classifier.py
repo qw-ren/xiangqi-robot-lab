@@ -1,8 +1,16 @@
+import logging
+import os
+from pathlib import Path
+
 import onnxruntime
 import numpy as np
 import cv2
 from typing import Tuple, List, Union
 from .base_onnx import BaseONNX
+from .classifier_adapter import FEATURE_COUNT, corrected_scores, features
+
+
+logger = logging.getLogger(__name__)
 
 
 def center_crop(image: np.ndarray, target_size: Tuple[int, int]) -> np.ndarray:
@@ -65,6 +73,26 @@ class FULL_CLASSIFIER_ONNX(BaseONNX):
         super().__init__(model_path, input_size)
 
         self.crop_size = crop_size
+        self.adapter = None
+        if (input_size, crop_size) == ((280, 315), (400, 450)) and os.getenv("CHRO_DISABLE_CLASSIFIER_ADAPTER") != "1":
+            self.adapter = self._load_adapter(Path(model_path).with_suffix(".adapter.npz"))
+
+    @staticmethod
+    def _load_adapter(path: Path):
+        if not path.is_file():
+            return None
+        try:
+            with np.load(path, allow_pickle=False) as data:
+                weight, bias = data["weight"], data["bias"]
+                if (data["symbols"].item() != "".join(dict_cate_names.values())
+                        or weight.shape != (16, FEATURE_COUNT) or bias.shape != (16,)
+                        or not np.isfinite(weight).all() or not np.isfinite(bias).all()):
+                    raise ValueError("adapter weights or class order are incompatible")
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            logger.warning("Cannot load classifier adapter %s: %s", path, exc)
+            return None
+        logger.info("Loaded classifier adapter %s", path)
+        return weight, bias
 
 
     def preprocess_image(self, img_bgr: cv2.UMat, is_rgb: bool = True):
@@ -137,6 +165,8 @@ class FULL_CLASSIFIER_ONNX(BaseONNX):
 
         # shape (90, 16)
         first_batch_labels = labels[0]
+        if self.adapter is not None:
+            first_batch_labels = corrected_scores(features(first_batch_labels, image), *self.adapter)
 
         # 获取置信度最高的标签
         # list[int]
