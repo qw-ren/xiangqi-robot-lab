@@ -20,12 +20,6 @@ proto.action = async function (work) { // 错误统一显示在系统日志。
 proto.init = async function () {
     await originalInit.call(this);
     const bind = (id, work) => document.getElementById(id)?.addEventListener('click', () => this.action(work));
-    bind('btn-dofbot-connect', async () => { const data = await this.api('/dofbot/connect', {port: document.getElementById('serial-port').value.trim(), baud: Number(document.getElementById('serial-baud').value)}); this.log(`${data.backend.toUpperCase()} 已连接，连接操作没有运动`, 'info'); await this.refreshDofbot(); });
-    bind('btn-dofbot-stop', async () => { await this.api('/dofbot/stop', {}); this.stopDynamicRecognition(); this.setRecognitionMode(false); this.isGameRunning = false; this.log('已停止本机后续输出并结束对局；已发消息由下位机自行处理，本机不发送急停或关节命令。', 'warning'); await this.syncFullState(); });
-    bind('btn-dofbot-clear', async () => { await this.api('/dofbot/clear', {}); this.log('故障已解除，请重摆标准初局再开始', 'info'); await this.refreshDofbot(); });
-    bind('btn-slots-clear', async () => { await this.api('/dofbot/clear', {empty_slots: true}); this.log('已确认吃子槽清空，槽位从 0 重新计数', 'info'); await this.refreshDofbot(); });
-    bind('btn-calibration-load', async () => { const data = await this.api('/dofbot/calibration'); document.getElementById('calibration-json').value = JSON.stringify(data.calibration, null, 2); this.log('标定文件已读入编辑器', 'info'); });
-    bind('btn-calibration-save', async () => { await this.api('/dofbot/calibration', JSON.parse(document.getElementById('calibration-json').value)); this.log('参数校验通过并已保存', 'info'); await this.refreshDofbot(); });
     bind('btn-refresh-cameras', () => this.loadLocalCameras(true));
     bind('btn-camera-check', async () => { if (!['camera', 'network'].includes(this.currentInputSource)) throw new Error('请先选择摄像头输入源'); const response = await fetch(`/api/camera/status?${this.cameraFrameQuery()}`); const data = await response.json(); this.log(JSON.stringify(data), data.camera_opened ? 'info' : 'warning'); });
     bind('btn-disconnect-network', async () => { this.stopLocalCameraFrames(); await this.api('/network_camera/disconnect', {}); this.networkCameraUrl = ''; document.getElementById('input-source').value = 'virtual'; this.changeInputSource(); this.log('网络摄像头已断开', 'info'); });
@@ -40,13 +34,9 @@ proto.init = async function () {
 proto.refreshDofbot = async function () {
     const data = await this.api('/dofbot/status');
     this.dofbot = data;
-    const label = data.backend === 'mock' ? 'MOCK：电脑模拟，无实体动作' : 'SERIAL：只发送棋盘级走棋消息';
-    document.getElementById('dofbot-status').textContent = `${label}｜${data.connected ? '已连接' : '未连接'}${data.port ? ' ' + data.port + ' @ ' + data.baud : ''}｜${data.busy ? '发送中' : '空闲'}${data.last_payload ? '｜最近发送 ' + data.last_payload.move : ''}${data.fault ? '｜故障：' + data.fault : ''}`;
     document.getElementById('btn-start-hardware-game').textContent = data.backend === 'mock' ? '开始模拟器对局' : '开始串口对局';
-    document.getElementById('btn-start-hardware-game').disabled = !data.connected || !data.calibrated || !data.slots_confirmed || !!data.fault || data.busy || !!this.currentState?.ai_thinking || !!this.currentState?.pending_dofbot || !!this.currentState?.awaiting_initial_board;
-    document.getElementById('btn-dofbot-connect').disabled = data.busy;
-    document.getElementById('btn-dofbot-clear').disabled = data.busy || this.isGameRunning;
-    document.getElementById('btn-slots-clear').disabled = data.busy || this.isGameRunning;
+    // 连接面板移除后，由用户点击保留的开始按钮时使用启动配置连接。
+    document.getElementById('btn-start-hardware-game').disabled = !data.calibrated || !data.slots_confirmed || !!data.fault || data.busy || this.isGameRunning || !!this.currentState?.ai_thinking || !!this.currentState?.pending_dofbot || !!this.currentState?.awaiting_initial_board;
     return data;
 };
 
@@ -81,7 +71,6 @@ proto.syncFullState = async function () {
     else this.updateGameStatusFromTurn(this.currentTurnFromFen(state.current_fen));
     document.getElementById('btn-start-simulation-game').disabled = !!state.ai_thinking || !!state.pending_dofbot || !!state.awaiting_initial_board || !!state.robot_moving;
     document.getElementById('btn-reset-game').disabled = !!state.ai_thinking || !!state.pending_dofbot || !!state.awaiting_initial_board || !!state.robot_moving;
-    document.getElementById('btn-ai-move').disabled = !this.isGameRunning || this.isPlayerTurn || !!state.ai_thinking || !!state.pending_dofbot || !!state.awaiting_initial_board || !!state.robot_moving;
     const source = document.getElementById('input-source');
     source.disabled = this.isGameRunning; // 对局期间保持同一视觉来源。
     document.getElementById('btn-capture').disabled = !['camera', 'network'].includes(this.currentInputSource);
@@ -96,12 +85,19 @@ proto.syncFullState = async function () {
             this.showVisionObservation(this.latestVisionPreview, false);
         }
     }
-    ['btn-refresh-cameras', 'btn-connect-network', 'btn-disconnect-network', 'btn-calibration-save', 'serial-port', 'serial-baud'].forEach(id => { document.getElementById(id).disabled = this.isGameRunning || !!state.robot_moving; });
+    ['btn-refresh-cameras', 'btn-connect-network', 'btn-disconnect-network'].forEach(id => { document.getElementById(id).disabled = this.isGameRunning || !!state.robot_moving; });
 };
 
 proto.startGame = async function (mode = 'simulation') {
     await this.action(async () => {
         const settings = this.getGameSettings();
+        if (mode === 'hardware') {
+            const output = await this.refreshDofbot();
+            if (!output.connected) {
+                // 空请求沿用后端既有串口/模拟器配置，不在网页中修改硬件参数。
+                await this.api('/dofbot/connect', {});
+            }
+        }
         this.stopDynamicRecognition();
         const data = await this.api('/game/start', {mode, ai_color: settings.aiColor, first_player: settings.firstPlayer, input_source: this.currentInputSource});
         this.lastAiBestMoveHandled = null;
@@ -120,7 +116,7 @@ proto.getAIMove = async function () {
     if (this.aiRequestBusy || this.aiPollingTimer) return;
     this.aiRequestBusy = true;
     try {
-        const depth = Number(document.getElementById('ai-depth').value);
+        const depth = 8; // 沿用移除设置面板前的默认深度；自动 AI 流程保留。
         await this.api('/ai_move', {depth});
         this.log(`AI 搜索已启动，深度上限 ${depth}`, 'info');
         this.startAIStatusPolling();
