@@ -14,10 +14,31 @@ from web_simulation.services import (
     camera_source_info,
     get_recognizer,
     resolve_camera_source,
+    release_web_camera,
 )
 from vision.camera import normalize_camera_source
 
 bp = Blueprint("camera", __name__)
+
+
+@bp.after_request
+def disable_camera_cache(response):
+    """失败响应也禁止缓存，重连后浏览器必须重新获取图像。"""
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    return response
+
+
+def read_web_camera_frame(camera_source):
+    """在设备关闭或超过三秒没有新帧时重开；不改动视觉识别模块。"""
+    recog = get_recognizer(camera_source=camera_source)
+    manager = recog.camera_manager
+    last_time = getattr(manager, 'last_frame_time', 0.0)
+    stale = last_time > 0 and time.monotonic() - last_time > 3.0
+    if stale or not manager.is_opened():
+        release_web_camera(manager)
+        if not manager.start():
+            return None
+    return manager.capture_frame()
 
 
 def camera_request_kwargs(data=None):
@@ -58,8 +79,7 @@ def generate_camera_stream(camera_source, stream_token):
             with _app.camera_lock:
                 if stream_token != _app.active_stream_token:
                     break
-                recog = get_recognizer(camera_source=camera_source)
-                frame = recog.camera_manager.capture_frame()
+                frame = read_web_camera_frame(camera_source)
 
             if frame is None:
                 placeholder = create_stream_unavailable_frame(f"Camera {source_label} has no frame")
@@ -109,6 +129,7 @@ def connect_network_camera():
         previous_url = _app.current_network_camera_url
         previous_source = _app.current_camera_source
         with _app.camera_lock:
+            _app.active_stream_token += 1
             _app.current_network_camera_url = source
             _app.current_camera_source = source
             recog = get_recognizer(camera_source="network")
@@ -172,8 +193,9 @@ def network_camera_status():
 def disconnect_network_camera():
     try:
         with _app.camera_lock:
+            _app.active_stream_token += 1
             if _app.recognizer is not None and _app.recognizer.camera_manager.is_network_source:
-                _app.recognizer.camera_manager.stop()
+                release_web_camera(_app.recognizer.camera_manager)
             _app.current_camera_source = _app.current_camera_index
 
         return jsonify(
@@ -227,9 +249,13 @@ def camera_frame():
     """Return one JPEG frame. More robust than MJPEG in some browsers."""
     camera_source = resolve_camera_source(**camera_request_kwargs())
     try:
-        with _app.camera_lock:
-            recog = get_recognizer(camera_source=camera_source)
-            frame = recog.camera_manager.capture_frame()
+        # 旧设备的驱动尚未返回时及时报忙，避免取帧请求无限排队。
+        if not _app.camera_lock.acquire(timeout=1.0):
+            return Response(status=503, headers={"Cache-Control": "no-store"})
+        try:
+            frame = read_web_camera_frame(camera_source)
+        finally:
+            _app.camera_lock.release()
 
         if frame is None:
             frame_bytes = create_stream_unavailable_frame(f"Camera {camera_source} has no frame")

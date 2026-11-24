@@ -20,6 +20,15 @@ import config
 from vision.camera import normalize_camera_source, is_network_camera_source
 
 logger = logging.getLogger(__name__)
+camera_scan_lock = threading.Lock()  # 多个网页同时刷新时只允许一轮设备探测。
+
+
+def release_web_camera(manager):
+    """释放网页占用的设备并清空旧帧，避免断开后仍显示缓存画面。"""
+    manager.stop()
+    with manager._frame_lock:
+        manager.last_frame = None
+        manager.last_frame_time = 0.0
 
 
 def _app_module():
@@ -205,21 +214,28 @@ def list_available_cameras(max_cameras=6, refresh=False):
     """枚举有效设备；max_cameras为扫描上限，refresh=True重新扫描，返回实际可读设备列表。"""
     _app = _app_module()
 
-    manager = _app.recognizer.camera_manager if _app.recognizer is not None else None
-    active = manager.camera_source if manager is not None and manager.is_opened() else None
-    if _app.camera_probe_cache and not refresh:
-        if not isinstance(active, int) or any(c["index"] == active for c in _app.camera_probe_cache):
-            return _app.camera_probe_cache
+    if _app.camera_probe_cache is not None and not refresh:
+        return _app.camera_probe_cache
 
+    with camera_scan_lock, _app.camera_lock, _app.recognizer_lock:
+        if _app.camera_probe_cache is not None and not refresh:
+            return _app.camera_probe_cache
+        _app.active_stream_token += 1  # 旧 MJPEG 请求不得在扫描后重新打开旧设备。
+        manager = _app.recognizer.camera_manager if _app.recognizer else None
+        if manager is not None and not manager.is_network_source:
+            release_web_camera(manager)
+        return _scan_available_cameras(max_cameras)
+
+
+def _scan_available_cameras(max_cameras):
+    """调用方持有设备锁；扫描后按新的网页选择在下一次取帧时打开设备。"""
+    _app = _app_module()
     camera_names = get_windows_camera_names()
     cameras = []
     preferred_index = int(config.CAMERA_INDEX)
 
     for index in range(max_cameras):
-        if index == active:
-            probe = {"width": manager.width, "height": manager.height}
-        else:
-            probe = probe_camera_index(index)
+        probe = probe_camera_index(index)
         if probe:
             name = camera_names[index] if index < len(camera_names) else None
             label = f"{name or '本地摄像头'}（索引 {index}）"

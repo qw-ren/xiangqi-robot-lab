@@ -116,13 +116,23 @@ class ChessSimulation {
     }
 
     // 加载本地摄像头列表
-    async loadLocalCameras() {
+    async loadLocalCameras(forceRefresh = false) {
         const select = document.getElementById('input-source');
-
+        if (this.cameraScanBusy) return; // 防止重复点击生成多轮扫描和旧列表覆盖。
+        this.cameraScanBusy = true;
+        const button = document.getElementById('btn-refresh-cameras');
+        if (button) button.disabled = true;
+        select.disabled = true;
+        this.stopLocalCameraFrames();
+        this.setCameraPreviewStatus('正在扫描摄像头，请稍候…');
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 45000);
+        let loaded = false;
         try {
-            const refresh = select.dataset.loaded === 'true' ? '?refresh=1' : ''; // 手动刷新重新探测，首次打开可复用后端缓存。
-            const response = await fetch(`${this.apiBase}/cameras${refresh}`);
+            const refresh = forceRefresh || select.dataset.loaded === 'true' ? '?refresh=1' : '';
+            const response = await fetch(`${this.apiBase}/cameras${refresh}`, {signal: controller.signal, cache: 'no-store'});
             const data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.error || '扫描失败');
             const cameras = data.success ? data.cameras : [];
             const selectedValue = select.dataset.loaded === 'true'
                 ? select.value
@@ -166,14 +176,22 @@ class ChessSimulation {
             }
 
             select.dataset.loaded = 'true';
-            this.changeInputSource();
+            loaded = true;
         } catch (error) {
             this.log(`加载摄像头列表失败: ${error.message}`, 'error');
+        } finally {
+            clearTimeout(timeout);
+            this.cameraScanBusy = false;
+            select.disabled = false;
+            if (button) button.disabled = !!this.isGameRunning;
+            if (loaded) this.changeInputSource();
+            else if (['camera', 'network'].includes(this.currentInputSource)) this.startLocalCameraStream();
         }
     }
 
     // 切换输入源
     changeInputSource() {
+        this.stopLocalCameraFrames(); // 先取消旧源请求，再修改源；旧帧不能覆盖新源。
         const source = document.getElementById('input-source').value;
         const img = document.getElementById('camera-feed');
         this.setCameraPreviewStatus(source === 'virtual' ? '当前为虚拟棋盘；选择摄像头输入源可查看实时画面。' : source === 'local' ? '本地图片模式' : '正在连接摄像头…');
@@ -248,6 +266,10 @@ class ChessSimulation {
     }
 
     stopLocalCameraFrames() {
+        if (this.cameraFrameController) {
+            this.cameraFrameController.abort();
+            this.cameraFrameController = null;
+        }
         if (this.cameraFrameTimer) {
             clearInterval(this.cameraFrameTimer);
             this.cameraFrameTimer = null;
@@ -273,17 +295,32 @@ class ChessSimulation {
         return `camera_index=${this.selectedCameraIndex}`;
     }
 
-    refreshCameraFrame() {
-        if (!['camera', 'network'].includes(this.currentInputSource) || this.cameraFrameBusy) {
+    async refreshCameraFrame() {
+        if (this.cameraScanBusy || !['camera', 'network'].includes(this.currentInputSource) || this.cameraFrameBusy) {
             return;
         }
 
         this.cameraFrameBusy = true;
+        const controller = new AbortController();
+        this.cameraFrameController = controller;
+        const timeout = setTimeout(() => controller.abort(), 8000); // 超时后释放 busy，下一轮继续尝试。
         const img = new Image();
         const canvas = document.getElementById('camera-view');
         const frameUrl = `${this.apiBase}/camera/frame?${this.cameraFrameQuery()}&t=${Date.now()}`;
-
-        img.onload = () => {
+        let objectUrl;
+        try {
+            const response = await fetch(frameUrl, {signal: controller.signal, cache: 'no-store'});
+            if (!response.ok) throw new Error(`摄像头取帧失败 (${response.status})`);
+            const blob = await response.blob();
+            if (controller.signal.aborted || this.cameraFrameController !== controller) return;
+            objectUrl = URL.createObjectURL(blob);
+            await new Promise((resolve, reject) => {
+                img.onload = resolve;
+                img.onerror = () => reject(new Error('图像解码失败'));
+                controller.signal.addEventListener('abort', () => reject(new Error('取帧超时')), {once: true});
+                img.src = objectUrl;
+            });
+            if (controller.signal.aborted || this.cameraFrameController !== controller) return;
             if (canvas) {
                 const ctx = canvas.getContext('2d');
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -294,19 +331,28 @@ class ChessSimulation {
                 const y = (canvas.height - drawHeight) / 2;
                 ctx.drawImage(img, x, y, drawWidth, drawHeight);
             }
-            this.cameraFrameBusy = false;
             this.setCameraPreviewStatus(`实时画面：${this.currentInputSource === 'network' ? '网络摄像头' : `本地摄像头（索引 ${this.selectedCameraIndex}）`}`);
-        };
-        img.onerror = () => {
-            this.cameraFrameBusy = false;
+        } catch (error) {
+            if (this.cameraFrameController !== controller) return;
+            // 隐藏旧画面，避免断开的摄像头仍被误认为正在直播。
+            if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
             const message = '摄像头画面不可用，请检查设备是否被占用，或点击“扫描／刷新摄像头”重新选择。';
             this.setCameraPreviewStatus(message);
             if (Date.now() - this.lastCameraFrameErrorAt > 5000) { // 错误日志最多每五秒一次，避免遮盖其他调试信息。
                 this.log(message, 'error');
                 this.lastCameraFrameErrorAt = Date.now();
             }
-        };
-        img.src = frameUrl;
+        } finally {
+            clearTimeout(timeout);
+            img.onload = null;
+            img.onerror = null;
+            img.src = '';
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+            if (this.cameraFrameController === controller) {
+                this.cameraFrameController = null;
+                this.cameraFrameBusy = false;
+            }
+        }
     }
 
     pauseForRobotMove(durationMs = this.robotPauseMs, options = {}) {
@@ -494,6 +540,7 @@ class ChessSimulation {
         }
         
         this.log(`正在连接网络摄像头: ${url}`, 'info');
+        this.stopLocalCameraFrames(); // 连接期间不让旧源的轮询争抢摄像头。
 
         try {
             const response = await fetch(`${this.apiBase}/network_camera/connect`, {
@@ -515,9 +562,11 @@ class ChessSimulation {
                 this.startLocalCameraStream();
             } else {
                 this.log(`网络摄像头连接失败: ${data.error}`, 'error');
+                if (this.currentInputSource === 'camera' || this.networkCameraUrl) this.startLocalCameraStream();
             }
         } catch (error) {
             this.log(`网络摄像头连接错误: ${error.message}`, 'error');
+            if (this.currentInputSource === 'camera' || this.networkCameraUrl) this.startLocalCameraStream();
         }
     }
 
