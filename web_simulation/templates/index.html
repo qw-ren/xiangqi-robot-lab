@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>中国象棋 Web 识别对弈台</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=side-by-side-20261124">
 </head>
 <body>
     <div class="app-shell">
@@ -23,54 +23,84 @@
         </header>
 
         <main class="main-content">
-            <aside class="control-panel panel">
-                <section class="panel-section">
-                    <h2>对局控制</h2>
-                    <div class="field-stack">
-                        <label for="ai-color">程序执色</label>
-                        <select id="ai-color">
-                            <option value="black">黑方</option>
-                            <option value="red">红方</option>
-                        </select>
-                    </div>
-                    <div class="field-stack">
-                        <label for="first-player">先手方</label>
-                        <select id="first-player">
-                            <option value="red">红方先手</option>
-                            <option value="black">黑方先手</option>
-                        </select>
-                    </div>
-                    <div class="control-buttons">
-                        <button id="btn-start-hardware-game" class="btn btn-primary btn-large">开始串口对局</button>
-                        <button id="btn-start-simulation-game" class="btn btn-secondary btn-large">模拟测试（无下位机）</button>
-                        <button id="btn-reset-game" class="btn btn-warning btn-large">重置游戏</button>
-                    </div>
-                </section>
+            <div class="sidebar">
+                <aside class="control-panel panel">
+                    <section class="panel-section">
+                        <h2>对局控制</h2>
+                        <div class="field-stack">
+                            <label for="ai-color">程序执色</label>
+                            <select id="ai-color">
+                                <option value="black">黑方</option>
+                                <option value="red">红方</option>
+                            </select>
+                        </div>
+                        <div class="field-stack">
+                            <label for="first-player">先手方</label>
+                            <select id="first-player">
+                                <option value="red">红方先手</option>
+                                <option value="black">黑方先手</option>
+                            </select>
+                        </div>
+                        <div class="control-buttons">
+                            <button id="btn-start-hardware-game" class="btn btn-primary btn-large">开始串口对局</button>
+                            <button id="btn-start-simulation-game" class="btn btn-secondary btn-large">模拟测试（无下位机）</button>
+                            <button id="btn-reset-game" class="btn btn-warning btn-large">重置游戏</button>
+                        </div>
+                    </section>
 
-                <section class="panel-section source-section">
-                    <h2>画面输入</h2>
-                    <p id="vision-observation-status" role="status">视觉尚未运行。ArUco 结果将作为观测预览显示。</p>
-                    <div class="field-stack">
-                        <label for="input-source">输入源</label>
-                        <select id="input-source" onchange="changeInputSource()">
-                            <option value="virtual">虚拟棋盘（不使用摄像头）</option>
-                            <option value="camera:0">USB 摄像头（索引 0）</option>
-                            <option value="network">网络摄像头</option>
-                            <option value="local">本地图片</option>
-                        </select>
-                    </div>
-                    <div id="network-camera-input" class="input-group" style="display: none;">
-                        <input type="text" id="network-camera-url" placeholder="http://192.168.1.23:8080 或 rtsp://192.168.1.23:8554/cam">
-                        <button id="btn-connect-network" class="btn btn-secondary">连接</button>
-                        <button id="btn-disconnect-network" class="btn btn-secondary">断开</button>
-                    </div>
-                    <div id="local-image-input" class="input-group" style="display: none;">
-                        <input type="file" id="local-image-file" accept="image/*" onchange="handleLocalImageUpload(event)">
-                    </div>
-                    <button id="btn-refresh-cameras" class="btn btn-secondary">扫描／刷新摄像头</button>
-                    <button id="btn-camera-check" class="btn btn-secondary">检查摄像头</button>
-                </section>
-            </aside>
+                    <section class="panel-section source-section">
+                        <h2>画面输入</h2>
+                        <p id="vision-observation-status" role="status">视觉尚未运行。ArUco 结果将作为观测预览显示。</p>
+                        <div class="field-stack">
+                            <label for="input-source">输入源</label>
+                            <select id="input-source" onchange="changeInputSource()">
+                                <option value="virtual">虚拟棋盘（不使用摄像头）</option>
+                                <option value="camera:0">USB 摄像头（索引 0）</option>
+                                <option value="network">网络摄像头</option>
+                                <option value="local">本地图片</option>
+                            </select>
+                        </div>
+                        <div id="network-camera-input" class="input-group" style="display: none;">
+                            <input type="text" id="network-camera-url" placeholder="http://192.168.1.23:8080 或 rtsp://192.168.1.23:8554/cam">
+                            <button id="btn-connect-network" class="btn btn-secondary">连接</button>
+                            <button id="btn-disconnect-network" class="btn btn-secondary">断开</button>
+                        </div>
+                        <div id="local-image-input" class="input-group" style="display: none;">
+                            <input type="file" id="local-image-file" accept="image/*" onchange="handleLocalImageUpload(event)">
+                        </div>
+                        <button id="btn-refresh-cameras" class="btn btn-secondary">扫描／刷新摄像头</button>
+                        <button id="btn-camera-check" class="btn btn-secondary">检查摄像头</button>
+                    </section>
+                </aside>
+
+                <aside class="info-panel">
+                    <section class="panel move-history">
+                        <div class="section-heading compact">
+                            <h2>走法历史</h2>
+                        </div>
+                        <div id="move-list" class="move-list"></div>
+                    </section>
+
+                    <section class="panel analysis-panel">
+                        <div class="section-heading compact">
+                            <h2>AI 分析</h2>
+                        </div>
+                        <div id="ai-analysis" class="analysis-content">
+                            <p>等待 AI 分析...</p>
+                        </div>
+                    </section>
+
+                    <section class="panel log-console">
+                        <div class="section-heading compact">
+                            <h2>系统日志</h2>
+                            <button id="btn-toggle-log-pause" class="btn btn-secondary btn-small">暂停日志</button>
+                            <button id="btn-clear-log" class="btn btn-secondary btn-small">清空</button>
+                            <button id="btn-export-log" class="btn btn-secondary btn-small">导出</button>
+                        </div>
+                        <div id="log-output" class="log-output"></div>
+                    </section>
+                </aside>
+            </div>
 
             <section class="vision-panel">
                 <article class="panel camera-section">
@@ -103,41 +133,15 @@
                             <strong id="piece-count">0</strong>
                         </div>
                     </div>
-                    <input type="text" id="fen-display" readonly aria-label="FEN" title="当前正式局面的 FEN">
-                    <div class="visible-controls"><button id="btn-copy-fen" class="btn btn-secondary">复制 FEN</button><a class="btn btn-secondary" href="/api/game/export" download>导出棋谱与全部棋位</a></div>
                     <div class="visual-board-container">
                         <canvas id="visual-board" width="520" height="580"></canvas>
                     </div>
+                    <div class="board-tools">
+                        <input type="text" id="fen-display" readonly aria-label="FEN" title="当前正式局面的 FEN">
+                        <div class="visible-controls"><button id="btn-copy-fen" class="btn btn-secondary">复制 FEN</button><a class="btn btn-secondary" href="/api/game/export" download>导出棋谱与全部棋位</a></div>
+                    </div>
                 </article>
             </section>
-
-            <aside class="info-panel">
-                <section class="panel move-history">
-                    <div class="section-heading compact">
-                        <h2>走法历史</h2>
-                    </div>
-                    <div id="move-list" class="move-list"></div>
-                </section>
-
-                <section class="panel analysis-panel">
-                    <div class="section-heading compact">
-                        <h2>AI 分析</h2>
-                    </div>
-                    <div id="ai-analysis" class="analysis-content">
-                        <p>等待 AI 分析...</p>
-                    </div>
-                </section>
-
-                <section class="panel log-console">
-                    <div class="section-heading compact">
-                        <h2>系统日志</h2>
-                        <button id="btn-toggle-log-pause" class="btn btn-secondary btn-small">暂停日志</button>
-                        <button id="btn-clear-log" class="btn btn-secondary btn-small">清空</button>
-                        <button id="btn-export-log" class="btn btn-secondary btn-small">导出</button>
-                    </div>
-                    <div id="log-output" class="log-output"></div>
-                </section>
-            </aside>
         </main>
     </div>
 
