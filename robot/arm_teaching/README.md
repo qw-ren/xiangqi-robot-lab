@@ -186,8 +186,12 @@ plays black. Use `--mode endgame --turn red` to supply those choices in the
 command. The game ends with a winner announcement when the side to move is
 checkmated or stalemated.
 
-An optional Web UI forwards the camera preview and observations to the game
-process on port 5001:
+The full-game runner starts a Web preview on port 5000 and shuts it down when
+the game exits. The Web UI forwards observations to the local vision endpoint
+on port 5001. Service logs are written to `logs/vision.log` and `logs/web.log`
+under the arm state directory (by default `~/chess_arm`).
+
+To run the Web UI separately for diagnostics:
 
 ```bash
 PYTHONPATH="$PWD/.runtime-deps:$HOME/chch-vision-deps" \

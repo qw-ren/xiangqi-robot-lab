@@ -2,8 +2,12 @@
 
 import argparse
 from collections import Counter
+from contextlib import contextmanager
+import logging
 import os
 from pathlib import Path
+import socket
+import subprocess
 import sys
 import time
 
@@ -17,6 +21,68 @@ from robot.arm_teaching.teach import (
 )
 
 PIECE_VALUES = {"r": 9, "c": 4, "n": 4, "b": 2, "a": 2, "p": 1}
+
+
+@contextmanager
+def vision_log(path: Path):
+    loggers = [logging.getLogger(name) for name in ("vision", "core", "werkzeug")]
+    settings = [(logger.level, logger.propagate) for logger in loggers]
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    try:
+        for logger in loggers:
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+        yield
+    finally:
+        for logger, (level, propagate) in zip(loggers, settings):
+            logger.removeHandler(handler)
+            logger.setLevel(level)
+            logger.propagate = propagate
+        handler.close()
+
+
+def web_port_open() -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", 5000), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+@contextmanager
+def game_web(path: Path):
+    if web_port_open():
+        print("Web port 5000 is already in use. Close the old Web process to restart it.", flush=True)
+        yield
+        return
+
+    root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ, CHRO_SKIP_STARTUP_PROMPT="1")
+    with path.open("ab") as log:
+        web = subprocess.Popen(
+            [sys.executable, "-u", "web_simulation/app.py"], cwd=root, env=env,
+            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            start_new_session=True)
+        try:
+            deadline = time.monotonic() + 5
+            while web.poll() is None and time.monotonic() < deadline:
+                if web_port_open():
+                    print("Web preview ready on port 5000.", flush=True)
+                    break
+                time.sleep(0.1)
+            else:
+                print(f"Web startup not confirmed. See {path}", flush=True)
+            yield
+        finally:
+            if web.poll() is None:
+                web.terminate()
+                try:
+                    web.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    web.kill()
+                    web.wait()
 
 
 def legal_transitions(fen):
@@ -222,7 +288,9 @@ def main():
 
     from vision.server import default_camera_index, game_vision
     camera = args.camera if args.camera is not None else default_camera_index()
-    with arm_lock(), game_vision(camera):
+    log_dir = args.arm_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with arm_lock(), vision_log(log_dir / "vision.log"), game_vision(camera), game_web(log_dir / "web.log"):
         print(f"Vision started on camera {camera}.", flush=True)
         # Reload after locking so no teaching session can race the preflight.
         store = PointStore(store.path)
