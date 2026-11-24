@@ -2,7 +2,9 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
+import socket
 import sys
 import time
 import urllib.request
@@ -11,6 +13,7 @@ from urllib.error import URLError
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from xq_utils.rules import START_FEN, board_from_fen, checked_transition
 from robot.arm_teaching.teach import taught_squares
+from vision.board_evidence import BoardEvidence
 
 
 def layout(fen):
@@ -19,31 +22,70 @@ def layout(fen):
                      for row in range(10))
 
 
-def wait_for_layout(expected, deadline):
+def wait_for_layout(expected, deadline, phase="Waiting for board", prior=None, required=()):
+    return wait_for_matching_layout({expected}, deadline, phase, prior=prior, required=required)
+
+
+def wait_for_matching_layout(expected, deadline, phase="Waiting for board", prior=None, required=(),
+                             validate_layout=None):
     consecutive = 0
     last_frame = None
+    previous_layout = None
+    last_observation = {}
+    evidence = BoardEvidence(prior, expected, required) if prior is not None else None
     request = urllib.request.Request(
-        "http://127.0.0.1:5000/api/vision/observation",
+        os.getenv("CHRO_VISION_SERVICE_URL", "http://127.0.0.1:5000").rstrip("/")
+        + "/api/vision/observation",
         data=b'{"camera_index":0}', headers={"Content-Type": "application/json"},
     )
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(request, timeout=min(10, max(0.1, deadline-time.monotonic()))) as response:
                 observation = json.load(response).get("observation", {})
-        except (URLError, TimeoutError):
+        except (URLError, TimeoutError, socket.timeout):
             observation = {}
+        if observation:
+            last_observation = observation
         frame = observation.get("frame_id")
-        if (frame != last_frame and observation.get("source") == "aruco"
-                and observation.get("layout") == expected
+        observed_layout = observation.get("layout")
+        valid_aruco = frame is not None and frame != last_frame and observation.get("source") == "aruco"
+        if evidence is not None:
+            if valid_aruco:
+                matched = evidence.add(observation.get("cells", ()))
+                if matched is not None:
+                    return matched
+            else:
+                evidence.reset()
+        elif (valid_aruco and observed_layout
+                and (validate_layout(observed_layout) if expected is None else observed_layout in expected)
                 and not set(observation.get("reasons", ())) & {"unknown_cells", "low_scores"}):
-            consecutive += 1
+            consecutive = consecutive + 1 if observed_layout == previous_layout else 1
             if consecutive == 3:
-                return
+                return observed_layout
         else:
             consecutive = 0
         last_frame = frame
+        previous_layout = observed_layout
         time.sleep(1)
-    raise TimeoutError("Expected board was not seen on three consecutive frames")
+    source = last_observation.get("source") or "none"
+    missing = last_observation.get("calibration", {}).get("missing_ids", [])
+    reasons = ", ".join(last_observation.get("reasons", [])) or "none"
+    progress = f"window={len(evidence.frames)}/5" if evidence is not None else f"streak={consecutive}/3"
+    details = f"source={source}; missing markers={missing}; reasons={reasons}; {progress}"
+    actual = "".join((last_observation.get("layout") or "").splitlines())
+    if len(actual) == 90 and expected:
+        closest = min(("".join(item.splitlines()) for item in expected),
+                      key=lambda item: (sum(a != b for a, b in zip(item, actual)), item))
+        differences = [f"{chr(97 + index % 9)}{9 - index // 9}:{want}->{seen}"
+                       for index, (want, seen) in enumerate(zip(closest, actual)) if want != seen]
+        if differences:
+            details += "; closest expected board differences (expected->seen): " + ", ".join(differences[:12])
+    requirement = "expected board was not seen on three consecutive frames"
+    if evidence is not None:
+        requirement = "stable legal transition was not confirmed"
+    elif expected is None:
+        requirement = "a valid starting layout was not seen on three consecutive frames"
+    raise TimeoutError(f"{phase}: {requirement} ({details})")
 
 
 def reachable_replies(fen, points):

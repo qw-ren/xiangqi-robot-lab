@@ -122,15 +122,16 @@ python3 robot/arm_teaching/teach.py --state "$HOME/chess_arm/teach_points.json"
 
 ```text
 coverage
-teach approaches a2 a3 b3 park
+teach a2a a3a b3a
+teach a2g a3g b3g park
 torque on
 goto park
 ```
 
 Use ICCS coordinates with the red home rank at 0 and the black home rank at 9.
 The teaching prompt asks you to support the arm and type `OFF` before releasing
-torque. Press Enter at each pose to read and save the five angles. For a square,
-record the grab/place pose only. Incomplete feedback can be retried, and previously saved
+torque. Press Enter at each pose to read and save the five angles. Use the `a`
+suffix for approach and `g` for grab/place. Incomplete feedback can be retried, and previously saved
 poses require explicit overwrite confirmation. Type `q` to stop teaching.
 Support the arm before requesting `torque on`.
 
@@ -141,12 +142,10 @@ Support the arm before requesting `torque on`.
 | `approach_black_left` | a–e | 5–9 |
 | `approach_black_right` | f–i | 5–9 |
 
-Teach an individual region with its name, or use `teach approaches` for all
-four. As soon as one shared pose is saved, transfers and coverage use the
-shared regions. A missing region blocks transfers involving that region.
-Existing `<square>g` entries are reused. A file with zero shared poses still
-supports the original per-square `<square>a` routes. Check clearances from
-the shared pose to each grab/place pose before automatic movement.
+Full-game play requires all 90 individual approaches and grab/place poses.
+Existing `<square>g` entries are reused. For manual transfers and the one-move
+trial, a saved individual approach takes priority over a shared region pose.
+Use `coverage` to find missing individual poses.
 
 Record `park` with the arm and tool clear of the board, all four markers and the
 camera view. Check the route from the destination approach pose to `park`
@@ -155,7 +154,49 @@ rises to the destination approach pose and then moves to `park`.
 
 ## Integrated one-move trial
 
-Start the Web vision server and run from the deployment directory:
+### Capture storage for full-game trials
+
+Run `teach captures` to record all 16 off-board slots in order, or use a
+batch such as `teach capture1 capture2`. Each slot has an approach and release
+pose, e.g. `capture1a` and `capture1g`. Use `coverage` to check the entries.
+After enabling torque, test with `goto2 h0 capture1`.
+
+The full-game runner requires all 32 poses. On each black capture the arm
+uses the next slot in order and parks. After vision confirms the board
+target is clear, it moves the black piece to that square and parks again.
+Clear the capture area before starting a new game. For `--resume-moves` the
+next slot is calculated from the black captures in the supplied history. Use
+`--capture-start N` when the physical next free slot differs from the default.
+
+### Full-game vision and optional Web preview
+
+The full-game runner starts and stops its local camera and vision endpoint in
+the same process. Run it on the Pi from the deployment directory:
+
+```bash
+export PYTHONPATH="$PWD/.runtime-deps:$HOME/chch-vision-deps"
+CHRO_ARUCO_ALLOW_APPROXIMATE=1 python3 -u tools/vision/full_game_arm_trial.py \
+  --engine "$HOME/pikafish/2025-06-23/pikafish" --execute
+```
+
+Choose `1` for the standard opening or `2` to use the current board. For an
+endgame, choose the side to move. The runner reads the current layout from
+three matching ArUco observations, then the human plays red and the arm
+plays black. Use `--mode endgame --turn red` to supply those choices in the
+command. The game ends with a winner announcement when the side to move is
+checkmated or stalemated.
+
+An optional Web UI forwards the camera preview and observations to the game
+process on port 5001:
+
+```bash
+PYTHONPATH="$PWD/.runtime-deps:$HOME/chch-vision-deps" \
+  CHRO_SKIP_STARTUP_PROMPT=1 CHRO_VISION_SERVICE_URL=http://127.0.0.1:5001 \
+  python3 -u web_simulation/app.py
+```
+
+The one-move trial defaults to the legacy Web endpoint. Run it separately
+from the deployment directory:
 
 ```bash
 export PYTHONPATH="$PWD/.runtime-deps:$HOME/chch-vision-deps"
