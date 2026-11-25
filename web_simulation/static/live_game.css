@@ -1,0 +1,19 @@
+:root { color-scheme: light; font-family: system-ui, "Microsoft YaHei", sans-serif; color: #32251e; background: #f7f1e8; }
+body { margin: 0; }
+main { max-width: 1080px; margin: 0 auto; padding: clamp(16px, 4vw, 48px); }
+header { margin-bottom: 22px; }
+h1, h2 { margin: 0 0 10px; }
+#phase { font-size: 1.25rem; font-weight: 700; margin: 0; }
+#detail, #view { color: #6b4b3b; overflow-wrap: anywhere; }
+#detail:empty { display: none; }
+.game { display: grid; grid-template-columns: minmax(0, 540px) minmax(240px, 1fr); gap: 24px; align-items: start; }
+canvas { display: block; width: 100%; height: auto; border-radius: 8px; background: #e9c488; }
+section { background: #fffcf7; border: 1px solid #e2d2be; border-radius: 8px; padding: 18px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+button { font: inherit; color: inherit; background: #fff9f0; border: 1px solid #b99d80; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
+button[aria-current="true"] { background: #ead6ba; font-weight: 700; }
+button:disabled { opacity: .55; cursor: default; }
+ol { max-height: 380px; overflow: auto; padding-left: 30px; margin-bottom: 0; }
+li { margin-bottom: 8px; }
+li button { text-align: left; }
+@media (max-width: 680px) { .game { grid-template-columns: minmax(0, 1fr); } }

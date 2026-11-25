@@ -10,6 +10,8 @@ normalize_camera_source, build_http_camera_candidate_urls`` keep working.
 import cv2
 import logging
 import os
+import re
+import subprocess
 import threading
 import time
 from typing import Optional, Tuple
@@ -55,6 +57,8 @@ class CameraManager:
             camera_index if camera_source is None else camera_source
         )
         self.camera_index = self.camera_source if isinstance(self.camera_source, int) else int(camera_index)
+        self.usb_device_link = None
+        self.demo_profile = False
         self.width = width
         self.height = height
         self.fps = fps
@@ -172,6 +176,13 @@ class CameraManager:
         logger.warning("Capture frame failed")
         return None
 
+    def latest_frame(self, max_age: float) -> Optional[np.ndarray]:
+        """Return a fresh frame from the background reader without opening the camera."""
+        with self._frame_lock:
+            if self.last_frame is not None and time.monotonic() - self.last_frame_time <= max_age:
+                return self.last_frame.copy()
+        return None
+
     def is_opened(self) -> bool:
         with self._camera_lock:
             return self.camera is not None and self.camera.isOpened()
@@ -225,6 +236,11 @@ class CameraManager:
             try:
                 logger.warning("Recovering camera %s after %s failed reads",
                                self.source_label, self._failed_reads)
+                if self.usb_device_link is not None:
+                    with self._camera_lock:
+                        if self.camera is not None:
+                            self.camera.release()
+                            self.camera = None
                 cap, first_frame = self._open_capture_with_frame()
                 if cap is None or first_frame is None:
                     return
@@ -284,6 +300,13 @@ class CameraManager:
 
                 self._configure_capture(cap, width, height)
                 frame = self._warmup_read(cap)
+                if frame is not None and self.demo_profile:
+                    try:
+                        self._apply_demo_controls(frame)
+                        frame = self._warmup_read(cap)
+                    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                        logger.error("Demo camera configuration failed: %s", exc)
+                        frame = None
                 if frame is not None:
                     logger.info("Camera source %s opened with backend=%s size=%sx%s",
                                 self.source_label, backend, frame.shape[1], frame.shape[0])
@@ -293,9 +316,34 @@ class CameraManager:
 
         return None, None
 
+    def _apply_demo_controls(self, frame):
+        if frame.shape[:2] != (600, 800):
+            raise ValueError(f"Expected 800x600 camera capture, got {frame.shape[:2]}")
+        command = ["v4l2-ctl", "-d", f"/dev/video{self.camera_index}"]
+        modes = {"exposure_auto": 1, "focus_auto": 0, "white_balance_temperature_auto": 0}
+        controls = {"exposure_absolute": 180, "focus_absolute": 672,
+                    "white_balance_temperature": 5000, "gain": 0, "brightness": 36,
+                    "contrast": 60, "power_line_frequency": 1}
+        for settings in (modes, controls):
+            values = ",".join(f"{key}={value}" for key, value in settings.items())
+            subprocess.run(command + ["-c", values], check=True, timeout=3)
+        expected = {**modes, **controls}
+        response = subprocess.check_output(command + ["-C", ",".join(expected)], text=True, timeout=3)
+        actual = {key: int(value) for key, value in re.findall(r"(\w+):\s*(-?\d+)", response)}
+        fmt = subprocess.check_output(command + ["--get-fmt-video", "--get-parm"], text=True, timeout=3)
+        if actual != expected or "MJPG" not in fmt or "30.000" not in fmt:
+            raise ValueError(f"Camera settings readback differs: {actual}, {fmt}")
+        logger.info("Demo camera controls read back: %s", actual)
+
     def _open_capture_for_backend(self, backend: int):
         if self.is_http_network_source:
             return HttpSnapshotCapture(self.camera_source)
+        if self.usb_device_link is not None:
+            device = self.usb_device_link.resolve()
+            index = device.name[5:]
+            if not device.exists() or not device.name.startswith("video") or not index.isdecimal():
+                return cv2.VideoCapture()
+            self.camera_source = self.camera_index = int(index)
         return cv2.VideoCapture(self.camera_source, backend)
 
     def _configure_capture(self, cap: cv2.VideoCapture, width: int, height: int):

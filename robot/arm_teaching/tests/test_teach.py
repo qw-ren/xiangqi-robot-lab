@@ -61,11 +61,12 @@ class FakeGPIO:
 
 
 class TeachControllerTests(unittest.TestCase):
-    def test_electromagnet_uses_bcm_21_and_starts_low(self):
+    def test_electromagnet_uses_bcm_20_enable_and_21_direction(self):
         gpio = FakeGPIO()
         magnet = Electromagnet(gpio=gpio)
         self.assertEqual(gpio.calls, [
             ("setmode", FakeGPIO.BCM),
+            ("setup", 20, FakeGPIO.OUT, FakeGPIO.LOW),
             ("setup", 21, FakeGPIO.OUT, FakeGPIO.LOW),
         ])
         self.assertFalse(magnet.is_on)
@@ -79,12 +80,19 @@ class TeachControllerTests(unittest.TestCase):
             electromagnet=magnet,
             emit=lambda _: None,
         )
-        controller.execute("magnet on")
-        controller.execute("magnet off")
-        self.assertEqual(gpio.calls[-2:], [
-            ("output", 21, FakeGPIO.HIGH),
-            ("output", 21, FakeGPIO.LOW),
+        with patch("teach.time.sleep") as sleep:
+            controller.execute("magnet pickup")
+            self.assertTrue(magnet.is_on)
+            controller.execute("magnet release")
+            self.assertTrue(magnet.is_on)
+            controller.execute("magnet off")
+        self.assertEqual(gpio.calls[3:], [
+            ("output", 20, FakeGPIO.LOW), ("output", 21, FakeGPIO.LOW),
+            ("output", 20, FakeGPIO.HIGH),
+            ("output", 20, FakeGPIO.LOW), ("output", 21, FakeGPIO.HIGH),
+            ("output", 20, FakeGPIO.HIGH), ("output", 20, FakeGPIO.LOW),
         ])
+        sleep.assert_not_called()
         self.assertFalse(magnet.is_on)
 
     def test_electromagnet_close_sets_low(self):
@@ -92,7 +100,7 @@ class TeachControllerTests(unittest.TestCase):
         magnet = Electromagnet(gpio=gpio)
         magnet.set(True)
         magnet.close()
-        self.assertEqual(gpio.calls[-1], ("output", 21, FakeGPIO.LOW))
+        self.assertEqual(gpio.calls[-1], ("output", 20, FakeGPIO.LOW))
 
     def test_invalid_magnet_command_does_not_change_output(self):
         gpio = FakeGPIO()
@@ -105,7 +113,7 @@ class TeachControllerTests(unittest.TestCase):
         )
         with self.assertRaises(TeachError):
             controller.execute("magnet toggle")
-        self.assertEqual(len(gpio.calls), 2)
+        self.assertEqual(len(gpio.calls), 3)
 
     def test_torque_commands_disable_and_enable_all_bus_servos(self):
         arm = FakeArm()
@@ -306,8 +314,20 @@ class TeachControllerTests(unittest.TestCase):
 
     def test_goto2_sends_the_verified_pose_and_magnet_sequence(self):
         controller, arm, gpio = self.make_transfer_controller()
-        with patch("teach.time.sleep") as sleep:
+        states = []
+        move = controller.move_to_point
+
+        def record_magnet_state(name, duration):
+            states.append((name, controller.electromagnet.is_on))
+            move(name, duration)
+
+        with patch("teach.time.sleep") as sleep, patch.object(
+                controller, "move_to_point", side_effect=record_magnet_state):
             controller.execute("goto2 c2 g5 700")
+        self.assertEqual(states, [
+            ("c2a", False), ("c2g", True), ("c2a", True),
+            ("g5a", True), ("g5g", True), ("g5a", False),
+        ])
 
         groups = [arm.writes[i:i + 5] for i in range(0, len(arm.writes), 5)]
         self.assertEqual([group[0][1] for group in groups], [10, 20, 10, 30, 40, 30])
@@ -316,21 +336,29 @@ class TeachControllerTests(unittest.TestCase):
             and all(item[2] == 700 for item in group)
             for group in groups))
         self.assertEqual(gpio.calls[-2:], [
-            ("output", 21, FakeGPIO.HIGH),
-            ("output", 21, FakeGPIO.LOW),
+            ("output", 20, FakeGPIO.HIGH),
+            ("output", 20, FakeGPIO.LOW),
         ])
-        self.assertEqual(sleep.call_count, 32)
+        self.assertEqual(sleep.call_count, 31)
 
-    def test_goto2_defaults_to_one_second_and_waits_between_stages(self):
+    def test_goto2_uses_live_start_pose_and_proportional_segment_times(self):
         controller, arm, gpio = self.make_transfer_controller()
         with patch("teach.time.sleep") as sleep:
             controller.execute("goto2 c2 g5")
         self.assertEqual(len(arm.writes), 30)
-        self.assertTrue(all(item[2] == 1000 for item in arm.writes))
+        self.assertEqual([item[2] for item in arm.writes[::5]], [1143, 143, 143, 286, 200, 143])
         waits = [call.args[0] for call in sleep.call_args_list]
-        self.assertEqual(waits.count(1.15), 6)
+        self.assertEqual(waits.count(0.143 + 0.15), 3)
+        self.assertEqual(waits.count(0.2 + 0.15), 1)
         self.assertEqual(waits.count(1.0), 1)
-        self.assertEqual(waits.count(0.25), 1)
+
+    def test_incomplete_start_feedback_blocks_speed_based_transfer(self):
+        controller, arm, gpio = self.make_transfer_controller(
+            arm=FakeArm([90, None, 90, 90, 90]))
+        with self.assertRaisesRegex(TeachError, "incomplete joint feedback"):
+            controller.execute("goto2 c2 g5")
+        self.assertEqual(arm.writes, [])
+        self.assertEqual(len(gpio.calls), 3)
 
     def test_goto2_checks_all_points_before_moving_or_switching_magnet(self):
         controller, arm, gpio = self.make_transfer_controller()
@@ -338,14 +366,14 @@ class TeachControllerTests(unittest.TestCase):
         with self.assertRaises(TeachError):
             controller.execute("goto2 c2 g5")
         self.assertEqual(arm.writes, [])
-        self.assertEqual(len(gpio.calls), 2)
+        self.assertEqual(len(gpio.calls), 3)
 
     def test_goto2_rejects_invalid_board_coordinate(self):
         controller, arm, gpio = self.make_transfer_controller()
         with self.assertRaises(TeachError):
             controller.execute("goto2 z2 g5")
         self.assertEqual(arm.writes, [])
-        self.assertEqual(len(gpio.calls), 2)
+        self.assertEqual(len(gpio.calls), 3)
 
     def test_goto2_turns_magnet_off_if_motion_fails_after_pickup(self):
         class FailingArm(FakeArm):
@@ -359,8 +387,8 @@ class TeachControllerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 controller.execute("goto2 c2 g5")
         self.assertEqual(gpio.calls[-2:], [
-            ("output", 21, FakeGPIO.HIGH),
-            ("output", 21, FakeGPIO.LOW),
+            ("output", 20, FakeGPIO.HIGH),
+            ("output", 20, FakeGPIO.LOW),
         ])
 
     def test_goto2_rejects_fastest_duration_because_completion_time_is_unknown(self):
@@ -368,14 +396,14 @@ class TeachControllerTests(unittest.TestCase):
         with self.assertRaises(TeachError):
             controller.execute("goto2 c2 g5 0")
         self.assertEqual(arm.writes, [])
-        self.assertEqual(len(gpio.calls), 2)
+        self.assertEqual(len(gpio.calls), 3)
 
     def test_integrated_transfer_requires_park_before_any_write(self):
         controller, arm, gpio = self.make_transfer_controller()
         with self.assertRaisesRegex(TeachError, "park"):
             controller.transfer("c2", "g5", 1000, return_to_park=True)
         self.assertEqual(arm.writes, [])
-        self.assertEqual(len(gpio.calls), 2)
+        self.assertEqual(len(gpio.calls), 3)
 
     def test_transfer_to_capture_slot_releases_piece_and_parks(self):
         controller, arm, gpio = self.make_transfer_controller()
@@ -384,7 +412,7 @@ class TeachControllerTests(unittest.TestCase):
             controller.execute("goto2 c2 capture")
         self.assertEqual([group[1] for group in arm.writes[::5]],
                          [10, 20, 10, 50, 60, 50, 70])
-        self.assertEqual(gpio.calls[-1], ("output", 21, FakeGPIO.LOW))
+        self.assertEqual(gpio.calls[-1], ("output", 20, FakeGPIO.LOW))
 
     def test_capture_transfer_requires_both_slot_poses_before_any_write(self):
         controller, arm, _ = self.make_transfer_controller()
@@ -400,7 +428,7 @@ class TeachControllerTests(unittest.TestCase):
             controller.execute("goto2 c2 g5")
         self.assertEqual([group[1] for group in arm.writes[::5]],
                          [10, 20, 10, 30, 40, 30, 50])
-        self.assertEqual(gpio.calls[-1], ("output", 21, FakeGPIO.LOW))
+        self.assertEqual(gpio.calls[-1], ("output", 20, FakeGPIO.LOW))
 
     def test_batch_teaching_saves_grab_poses_and_leaves_torque_off(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -414,6 +442,21 @@ class TeachControllerTests(unittest.TestCase):
                 controller.teach_points(["c2", "g5"], prompt=lambda _: next(answers))
             self.assertEqual(set(PointStore(store.path).points), {"c2g"})
             self.assertEqual(arm.torque_states, [0])
+
+    def test_celebration_plays_three_cycles_then_parks(self):
+        controller, arm, gpio = self.make_transfer_controller()
+        controller.store.points.update(celebration1=[60] * 5, celebration2=[75] * 5, park=[90] * 5)
+        with patch("teach.time.sleep"):
+            controller.execute("celebrate")
+        self.assertEqual([write[1] for write in arm.writes[::5]], [60, 75] * 3 + [90])
+        self.assertEqual(gpio.calls[3:], [("output", 20, FakeGPIO.LOW)])
+
+    def test_celebration_with_missing_pose_does_not_move(self):
+        controller, arm, gpio = self.make_transfer_controller()
+        controller.store.points.update(celebration1=[60] * 5, park=[90] * 5)
+        controller.execute("celebrate")
+        self.assertEqual(arm.writes, [])
+        self.assertEqual(len(gpio.calls), 3)
 
     def test_quadrants_include_center_file_on_left(self):
         self.assertEqual(quadrant_approach("e4"), "approach_red_left")
@@ -444,14 +487,23 @@ class TeachControllerTests(unittest.TestCase):
             controller.execute("goto2 c2 e4")
         self.assertEqual([group[1] for group in arm.writes[::5]], [50, 20, 50, 70, 50])
 
-    def test_numbered_capture_uses_individual_approach_and_parks(self):
+    def test_numbered_capture_exits_through_region_before_transferring(self):
         controller, arm, _ = self.make_transfer_controller()
         controller.store.points.update(approach_red_left=[50] * 5, capture16a=[60] * 5,
                                        capture16g=[70] * 5, park=[80] * 5)
         with patch("teach.time.sleep"):
             controller.execute("goto2 c2 capture16")
         self.assertEqual([group[1] for group in arm.writes[::5]],
-                         [10, 20, 10, 60, 70, 60, 80])
+                         [50, 10, 20, 10, 50, 60, 70, 60, 80])
+
+    def test_board_transfer_uses_both_layers_at_both_ends(self):
+        controller, arm, _ = self.make_transfer_controller()
+        controller.store.points.update(approach_red_left=[50] * 5,
+                                       approach_black_right=[60] * 5, park=[80] * 5)
+        with patch("teach.time.sleep"):
+            controller.execute("goto2 c2 g5")
+        self.assertEqual([group[1] for group in arm.writes[::5]],
+                         [50, 10, 20, 10, 50, 60, 30, 40, 30, 60, 80])
 
 
 if __name__ == "__main__":

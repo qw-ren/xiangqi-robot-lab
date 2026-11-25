@@ -15,11 +15,17 @@ import time
 
 JOINT_IDS = (1, 2, 3, 4, 5)
 DEFAULT_DURATION_MS = 1000
+TRANSFER_SPEED_DEG_PER_SECOND = 70
+PLACEMENT_SPEED_DEG_PER_SECOND = 50
+MIN_TRANSFER_DURATION_MS = 100
+CELEBRATION_POSES = ("celebration1", "celebration2")
+CELEBRATION_CYCLES = 3
 WRITE_GAP_SECONDS = 0.01
-ELECTROMAGNET_GPIO = 21
+MAGNET_DIRECTION_GPIO = 21
+MAGNET_ENABLE_GPIO = 20
+MAGNET_PICKUP_DIRECTION_HIGH = False
 MOVE_SETTLE_SECONDS = 0.15
-MAGNET_PICKUP_SECONDS = 1.0
-MAGNET_RELEASE_SECONDS = 0.25
+MAGNET_PICKUP_WAIT_SECONDS = 1.0
 APPROACH_POINTS = ("approach_red_left", "approach_red_right",
                    "approach_black_left", "approach_black_right")
 CAPTURE_SLOTS = tuple(f"capture{index}" for index in range(1, 17))
@@ -41,6 +47,14 @@ def square_approach(square: str, points: dict) -> str:
     if approach in points or not any(name in points for name in APPROACH_POINTS):
         return approach
     return shared
+
+
+def square_approach_path(square: str, points: dict) -> tuple:
+    approach = square_approach(square, points)
+    region = quadrant_approach(square)
+    if approach != region and any(name in points for name in APPROACH_POINTS):
+        return region, approach
+    return (approach,)
 
 
 def taught_squares(points: dict):
@@ -75,18 +89,25 @@ class Electromagnet:
         self.gpio = gpio
         self.gpio.setmode(self.gpio.BCM)
         self.gpio.setup(
-            ELECTROMAGNET_GPIO,
+            MAGNET_ENABLE_GPIO,
             self.gpio.OUT,
             initial=self.gpio.LOW,
         )
+        self.gpio.setup(MAGNET_DIRECTION_GPIO, self.gpio.OUT, initial=self.gpio.LOW)
         self.is_on = False
 
     def set(self, enabled):
         self.gpio.output(
-            ELECTROMAGNET_GPIO,
+            MAGNET_ENABLE_GPIO,
             self.gpio.HIGH if enabled else self.gpio.LOW,
         )
         self.is_on = bool(enabled)
+
+    def drive(self, pickup: bool) -> None:
+        self.set(False)
+        direction_high = MAGNET_PICKUP_DIRECTION_HIGH if pickup else not MAGNET_PICKUP_DIRECTION_HIGH
+        self.gpio.output(MAGNET_DIRECTION_GPIO, self.gpio.HIGH if direction_high else self.gpio.LOW)
+        self.set(True)
 
     def close(self):
         self.set(False)
@@ -237,17 +258,42 @@ class TeachController:
         self.send_pose(self.store.points[name], move_time)
         time.sleep(move_time / 1000.0 + MOVE_SETTLE_SECONDS)
 
-    def transfer(self, source, destination, move_time, return_to_park=False):
+    @staticmethod
+    def motion_duration(start: list, target: list, speed: int = TRANSFER_SPEED_DEG_PER_SECOND) -> int:
+        angle_span = max(abs(end - begin) for begin, end in zip(start, target))
+        return max(MIN_TRANSFER_DURATION_MS,
+                   math.ceil(1000 * angle_span / speed))
+
+    def celebrate(self) -> None:
+        """Play three A/B cycles with the magnet disabled, then return to park."""
+        required = (*CELEBRATION_POSES, "park")
+        missing = [name for name in required if name not in self.store.points]
+        if missing:
+            self.emit(f"Celebration skipped. Missing poses: {', '.join(missing)}.")
+            return
+        self.set_magnet(False)
+        pose = self.read_pose()
+        if any(angle is None for angle in pose):
+            self.emit("Celebration skipped. Incomplete joint feedback.")
+            return
+        for name in (*(CELEBRATION_POSES * CELEBRATION_CYCLES), "park"):
+            target = self.store.points[name]
+            self.move_to_point(name, self.motion_duration(pose, target))
+            pose = target
+
+    def transfer(self, source, destination, move_time=None, return_to_park=False):
+        """Transfer through taught waypoints using a joint-space speed limit by default."""
         source = self.board_coordinate(source)
         destination = str(destination).lower()
-        source_approach = square_approach(source, self.store.points)
+        source_path = square_approach_path(source, self.store.points)
         if destination == "capture" or destination in CAPTURE_SLOTS:
             destination_approach, destination_grab = capture_poses(destination)
+            destination_path = (destination_approach,)
         else:
             destination = self.board_coordinate(destination)
-            destination_approach = square_approach(destination, self.store.points)
+            destination_path = square_approach_path(destination, self.store.points)
             destination_grab = destination + "g"
-        point_names = (source_approach, source + "g", destination_approach, destination_grab)
+        point_names = (*source_path, source + "g", *destination_path, destination_grab)
         if return_to_park:
             point_names += ("park",)
         missing = [name for name in dict.fromkeys(point_names) if name not in self.store.points]
@@ -255,30 +301,47 @@ class TeachController:
             raise TeachError("Transfer not started; missing points: {}".format(
                 ", ".join(missing)))
 
-        self.emit("Transfer {} -> {} ({} ms per move).".format(
-            source, destination, move_time))
-        self.move_to_point(source_approach, move_time)
-        self.move_to_point(source + "g", move_time)
+        pose = None
+        if move_time is None:
+            pose = self.read_pose()
+            if any(angle is None for angle in pose):
+                raise TeachError("Transfer not started; incomplete joint feedback.")
+        timing = (f"{TRANSFER_SPEED_DEG_PER_SECOND} deg/s joint limit" if move_time is None
+                  else f"{move_time} ms per move")
+        self.emit(f"Transfer {source} -> {destination} ({timing}).")
 
-        magnet_on = False
-        try:
-            self.set_magnet(True)
-            magnet_on = True
-            time.sleep(MAGNET_PICKUP_SECONDS)
-            self.move_to_point(source_approach, move_time)
-            if destination_approach != source_approach:
-                self.move_to_point(destination_approach, move_time)
-            self.move_to_point(destination_grab, move_time)
+        def move(name, speed=TRANSFER_SPEED_DEG_PER_SECOND):
+            nonlocal pose
+            target = self.store.points[name]
+            travel_time = move_time
+            if travel_time is None:
+                travel_time = self.motion_duration(pose, target, speed)
+            self.move_to_point(name, travel_time)
+            pose = target
+
+        if self.electromagnet is None:
+            raise TeachError("Electromagnet GPIO is not initialized.")
+        if self.electromagnet.is_on:
             self.set_magnet(False)
-            magnet_on = False
-            time.sleep(MAGNET_RELEASE_SECONDS)
-            self.move_to_point(destination_approach, move_time)
-            if return_to_park:
-                self.move_to_point("park", move_time)
-        except BaseException:
-            if magnet_on:
-                self.set_magnet(False)
-            raise
+        for name in source_path:
+            move(name)
+
+        try:
+            self.drive_magnet(pickup=True)
+            move(source + "g")
+            time.sleep(MAGNET_PICKUP_WAIT_SECONDS)
+            for name in reversed(source_path):
+                move(name)
+            entry_path = destination_path[1:] if source_path[0] == destination_path[0] else destination_path
+            for name in entry_path:
+                move(name)
+            move(destination_grab, PLACEMENT_SPEED_DEG_PER_SECOND)
+        finally:
+            self.set_magnet(False)
+        for name in reversed(destination_path):
+            move(name)
+        if return_to_park:
+            move("park")
         self.emit("Transfer complete: {} -> {}.".format(source, destination))
 
     def teach_points(self, targets, prompt=input):
@@ -287,6 +350,9 @@ class TeachController:
         for target in (target.lower() for target in targets):
             if target == "approaches":
                 poses_to_teach.update(dict.fromkeys(APPROACH_POINTS, "shared approach"))
+            elif target == "celebration" or target in CELEBRATION_POSES:
+                names = CELEBRATION_POSES if target == "celebration" else (target,)
+                poses_to_teach.update(dict.fromkeys(names, "celebration pose, clear of the board"))
             elif target in ("capture", "captures") or target in CAPTURE_SLOTS:
                 slots = CAPTURE_SLOTS if target == "captures" else (target,)
                 for slot in slots:
@@ -334,10 +400,14 @@ class TeachController:
         if self.electromagnet is None:
             raise TeachError("Electromagnet GPIO is not initialized.")
         self.electromagnet.set(enabled)
-        action = "ON" if enabled else "OFF"
-        level = "HIGH" if enabled else "LOW"
-        self.emit("Electromagnet command: {} (GPIO{} {}).".format(
-            action, ELECTROMAGNET_GPIO, level))
+        self.emit(f"Electromagnet enable GPIO{MAGNET_ENABLE_GPIO}: {'HIGH' if enabled else 'LOW'}.")
+
+    def drive_magnet(self, pickup: bool) -> None:
+        if self.electromagnet is None:
+            raise TeachError("Electromagnet GPIO is not initialized.")
+        action = "pickup" if pickup else "release"
+        self.electromagnet.drive(pickup)
+        self.emit(f"Electromagnet {action} enabled.")
 
     def set_torque(self, enabled):
         self.arm.Arm_serial_set_torque(1 if enabled else 0)
@@ -390,10 +460,12 @@ class TeachController:
             self.emit(HELP)
         elif command == "magnet" and len(args) == 2:
             action = args[1].lower()
-            if action not in ("on", "off"):
-                raise TeachError("Use 'magnet on' or 'magnet off'.")
-            enabled = action == "on"
-            self.set_magnet(enabled)
+            if action == "off":
+                self.set_magnet(False)
+            elif action in ("pickup", "release", "on"):
+                self.drive_magnet(pickup=action != "release")
+            else:
+                raise TeachError("Use 'magnet pickup', 'magnet release', or 'magnet off'.")
         elif command == "torque" and len(args) == 2:
             action = args[1].lower()
             if action not in ("on", "off"):
@@ -403,6 +475,8 @@ class TeachController:
             self.read_pose()
         elif command == "teach" and len(args) >= 2:
             self.teach_points(args[1:])
+        elif command == "celebrate" and len(args) == 1:
+            self.celebrate()
         elif command == "coverage" and len(args) == 1:
             complete = taught_squares(self.store.points)
             self.emit("Complete ({}/90): {}; park: {}".format(
@@ -451,7 +525,7 @@ class TeachController:
             self.send_pose(self.store.points[name],
                            duration(args[2] if len(args) == 3 else None))
         elif command == "goto2" and len(args) in (3, 4):
-            move_time = duration(args[3] if len(args) == 4 else None)
+            move_time = duration(args[3]) if len(args) == 4 else None
             if move_time == 0:
                 raise TeachError("goto2 needs a nonzero duration so it can wait for each move.")
             self.transfer(args[1], args[2], move_time,
@@ -468,7 +542,10 @@ class TeachController:
 
 
 HELP = """Commands (angles are Arm_Lib logical degrees):
-  magnet on / magnet off       Switch electromagnet (BCM GPIO21)
+  magnet pickup / release     Enable continuously in the selected direction
+  teach celebration           Record celebration1 and celebration2
+  celebrate                   Alternate the two celebration poses three times, then park
+  magnet off                  Disable the electromagnet driver
   torque off / torque on       Request torque off/on for all bus servos
   read                         Read IDs 1..5
   teach a0a b9a                Record individual square approach poses
@@ -485,7 +562,7 @@ HELP = """Commands (angles are Arm_Lib logical degrees):
   save NAME                     Save the current five-angle pose
   delete NAME                   Delete one saved point (alias: del)
   goto NAME [MS]                 Replay a saved pose
-  goto2 FROM TO [MS]             Move one piece, e.g. goto2 c2 g5
+  goto2 FROM TO [MS]             Move one piece at the default joint speed, or override with MS
   goto2 FROM capture1 [MS]       Move one piece to the specified numbered slot
   points                        List saved poses
   help                          Show commands
@@ -496,9 +573,9 @@ Torque requests affect the whole bus-servo group. Torque off may let the arm
 drop. Status reports communication/faults, not actual torque enable or arrival.
 The driver extends the vendor angle mapping and clamps only the encoded
 position to the extension-board command range 96..4000. Read feedback is
-displayed without angle clamping. goto2 prefers the square approach and uses saved
-'g' (grab/place) poses for each coordinate, switches the magnet, and waits
-for every timed move to finish."""
+displayed without angle clamping. goto2 uses the region approach, then the
+square approach and grab/place pose when both are registered. Each segment
+uses a 70 deg/s joint limit by default. Explicit MS selects a fixed segment time."""
 
 
 def main(argv=None):
@@ -519,7 +596,7 @@ def main(argv=None):
 
     controller = TeachController(arm, store, electromagnet=electromagnet)
     print("Five-servo teaching ready. IDs 1..5 only; no motion sent at startup.")
-    print("Electromagnet: BCM GPIO21 (physical pin 40), initialized LOW.")
+    print("Electromagnet: BCM GPIO20 enable (pin 38), GPIO21 direction (pin 40).")
     print("Type 'help' for commands.")
     try:
         while True:

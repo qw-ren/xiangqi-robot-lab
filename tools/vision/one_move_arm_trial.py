@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 import socket
@@ -13,7 +14,26 @@ from urllib.error import URLError
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from xq_utils.rules import START_FEN, board_from_fen, checked_transition
 from robot.arm_teaching.teach import taught_squares
-from vision.board_evidence import BoardEvidence
+from vision.board_evidence import BoardEvidence, cell_score_threshold
+
+diagnostics = logging.getLogger("chro.diagnostics")
+STARTING_EMPTY_SCORE = 0.75
+
+
+def starting_scores_ok(observation):
+    reasons = observation.get("reasons", ())
+    if "unknown_cells" in reasons:
+        return False
+    if "low_scores" not in reasons:
+        return True
+    cells = observation.get("cells", ())
+    threshold = observation.get("quality", {}).get("min_score", 0.8)
+    return len(cells) == 90 and all(
+        cell["piece"] != "x" and cell["score"] >= (
+            min(threshold, STARTING_EMPTY_SCORE) if cell["piece"] == "." else threshold
+        )
+        for cell in cells
+    )
 
 
 def layout(fen):
@@ -22,17 +42,26 @@ def layout(fen):
                      for row in range(10))
 
 
-def wait_for_layout(expected, deadline, phase="Waiting for board", prior=None, required=()):
-    return wait_for_matching_layout({expected}, deadline, phase, prior=prior, required=required)
+def wait_for_layout(expected, deadline, phase="Waiting for board", prior=None, required=(),
+                    starting_position=False, report=None):
+    return wait_for_matching_layout({expected}, deadline, phase, prior=prior, required=required,
+                                    starting_position=starting_position, report=report)
 
 
 def wait_for_matching_layout(expected, deadline, phase="Waiting for board", prior=None, required=(),
-                             validate_layout=None):
+                             validate_layout=None, robot_destination=None, starting_position=False,
+                             confirm_low_scores=None, report=None):
     consecutive = 0
+    review_streak = 0
     last_frame = None
     previous_layout = None
     last_observation = {}
-    evidence = BoardEvidence(prior, expected, required) if prior is not None else None
+    evidence = BoardEvidence(prior, expected, required, robot_destination) if prior is not None else None
+    last_error = None
+    next_report = 0.0
+    next_camera_notice = 0.0
+    next_aruco_notice = 0.0
+    diagnostics.info("Board check started: %s", phase)
     request = urllib.request.Request(
         os.getenv("CHRO_VISION_SERVICE_URL", "http://127.0.0.1:5000").rstrip("/")
         + "/api/vision/observation",
@@ -42,13 +71,60 @@ def wait_for_matching_layout(expected, deadline, phase="Waiting for board", prio
         try:
             with urllib.request.urlopen(request, timeout=min(10, max(0.1, deadline-time.monotonic()))) as response:
                 observation = json.load(response).get("observation", {})
-        except (URLError, TimeoutError, socket.timeout):
+        except (URLError, TimeoutError, socket.timeout) as exc:
+            last_error = str(exc)
             observation = {}
+        else:
+            last_error = None
         if observation:
             last_observation = observation
         frame = observation.get("frame_id")
         observed_layout = observation.get("layout")
-        valid_aruco = frame is not None and frame != last_frame and observation.get("source") == "aruco"
+        now = time.monotonic()
+        if frame is None and now >= next_camera_notice:
+            detail = last_error or "empty vision response"
+            message = ("no fresh camera frame received" if "503" in detail
+                       else "vision did not return an observation")
+            print(f"{phase}: {message} ({detail}). Waiting for vision.", flush=True)
+            next_camera_notice = now + 10
+        elif frame is not None and next_camera_notice:
+            print(f"{phase}: vision observations received again.", flush=True)
+            next_camera_notice = 0.0
+        if frame is not None and observation.get("source") != "aruco" and now >= next_aruco_notice:
+            missing = observation.get("calibration", {}).get("missing_ids", [])
+            print(f"{phase}: camera is delivering frames, but ArUco localization failed "
+                  f"(missing markers: {missing}).", flush=True)
+            next_aruco_notice = now + 10
+        elif observation.get("source") == "aruco":
+            next_aruco_notice = 0.0
+        if now >= next_report:
+            threshold = observation.get("quality", {}).get("min_score", 0.8)
+            cells = observation.get("cells", ())
+            actual = "".join((observed_layout or "").splitlines())
+            relevant = evidence.closest_changes(actual) if evidence is not None and len(actual) == 90 else None
+            low = [f"{chr(97 + cell['col'])}{9 - cell['row']}:{cell['piece']}@{cell['score']:.2f}"
+                   for cell in cells if (relevant is None or cell["row"] * 9 + cell["col"] in relevant)
+                   and (cell["score"] < (
+                       cell_score_threshold(cell["piece"]) if evidence is not None else threshold
+                   ) or cell["piece"] == "x")]
+            differences = []
+            if relevant is not None:
+                differences = [f"{chr(97 + i % 9)}{9 - i // 9}:{want}->{actual[i]}"
+                               for i, want in relevant.items() if want != actual[i]]
+            elif len(actual) == 90 and expected:
+                closest = min(("".join(candidate.splitlines()) for candidate in expected),
+                              key=lambda candidate: sum(a != b for a, b in zip(candidate, actual)))
+                differences = [f"{chr(97 + index % 9)}{9 - index // 9}:{want}->{seen}"
+                               for index, (want, seen) in enumerate(zip(closest, actual)) if want != seen]
+            diagnostics.info("Board check %s frame=%s source=%s low=%s differences=%s request_error=%s",
+                             phase, frame, observation.get("source"), low[:12], differences[:12], last_error)
+            if report is not None:
+                report(frame, observation.get("source"), low[:4], differences[:4])
+            next_report = now + 10
+        if frame is not None and frame == last_frame:
+            time.sleep(1)
+            continue
+        valid_aruco = frame is not None and observation.get("source") == "aruco"
         if evidence is not None:
             if valid_aruco:
                 matched = evidence.add(observation.get("cells", ()))
@@ -58,12 +134,23 @@ def wait_for_matching_layout(expected, deadline, phase="Waiting for board", prio
                 evidence.reset()
         elif (valid_aruco and observed_layout
                 and (validate_layout(observed_layout) if expected is None else observed_layout in expected)
-                and not set(observation.get("reasons", ())) & {"unknown_cells", "low_scores"}):
-            consecutive = consecutive + 1 if observed_layout == previous_layout else 1
+                and "unknown_cells" not in observation.get("reasons", ())):
+            scores_ok = (starting_scores_ok(observation) if starting_position else
+                         "low_scores" not in observation.get("reasons", ()))
+            same_board = observed_layout == previous_layout
+            consecutive = (consecutive + 1 if same_board else 1) if scores_ok else 0
             if consecutive == 3:
                 return observed_layout
+            if confirm_low_scores is not None:
+                review_streak = review_streak + 1 if same_board else 1
+                if review_streak >= 3 and not scores_ok:
+                    if confirm_low_scores(observed_layout, observation["cells"]):
+                        return observed_layout
+                    consecutive = review_streak = 0
+                    deadline = max(deadline, time.monotonic() + 15)
         else:
             consecutive = 0
+            review_streak = 0
         last_frame = frame
         previous_layout = observed_layout
         time.sleep(1)
@@ -72,8 +159,14 @@ def wait_for_matching_layout(expected, deadline, phase="Waiting for board", prio
     reasons = ", ".join(last_observation.get("reasons", [])) or "none"
     progress = f"window={len(evidence.frames)}/5" if evidence is not None else f"streak={consecutive}/3"
     details = f"source={source}; missing markers={missing}; reasons={reasons}; {progress}"
+    if last_error:
+        details += f"; latest vision request error: {last_error}"
     actual = "".join((last_observation.get("layout") or "").splitlines())
-    if len(actual) == 90 and expected:
+    if len(actual) == 90 and evidence is not None:
+        changes = evidence.closest_changes(actual)
+        details += "; relevant squares (expected->seen): " + ", ".join(
+            f"{chr(97 + i % 9)}{9 - i // 9}:{want}->{actual[i]}" for i, want in changes.items())
+    elif len(actual) == 90 and expected:
         closest = min(("".join(item.splitlines()) for item in expected),
                       key=lambda item: (sum(a != b for a, b in zip(item, actual)), item))
         differences = [f"{chr(97 + index % 9)}{9 - index // 9}:{want}->{seen}"
@@ -113,7 +206,7 @@ def main():
     if args.seconds < 1:
         parser.error("--seconds must be positive")
     human = checked_transition(START_FEN, args.human_move)
-    from robot.arm_teaching.teach import TeachController, PointStore, Electromagnet, arm_lock, duration
+    from robot.arm_teaching.teach import TeachController, PointStore, Electromagnet, arm_lock
     with arm_lock():
         store = PointStore(args.arm_dir / "teach_points.json")
         candidates = reachable_replies(human["fen"], store.points)
@@ -139,7 +232,7 @@ def main():
         magnet = Electromagnet()
         try:
             TeachController(arm, store, electromagnet=magnet).transfer(
-                move[:2], move[2:], duration(), return_to_park=True)
+                move[:2], move[2:], return_to_park=True)
         finally:
             magnet.close()
         print("Transfer complete and arm parked; verifying board")

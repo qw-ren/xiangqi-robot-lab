@@ -1,37 +1,66 @@
 """Match recent per-cell observations against legal Xiangqi layouts."""
 
-from collections import Counter, deque
+from collections import deque
+
+MIN_CELL_SCORE = 0.55
+MIN_RED_ELEPHANT_SCORE = 0.60
+
+
+def cell_score_threshold(piece):
+    return MIN_RED_ELEPHANT_SCORE if piece == "B" else MIN_CELL_SCORE
+
+
+def piece_side(piece):
+    return piece.isupper() if piece not in (None, ".", "x") else piece
 
 
 class BoardEvidence:
-    """Use the last confirmed board as the prior for unchanged squares."""
+    """Verify only the square changes of legal successors of the confirmed board."""
 
-    def __init__(self, prior, candidates, required=()):
-        self.prior = "".join(prior.splitlines())
+    def __init__(self, prior, candidates, required=(), robot_destination=None):
+        prior = "".join(prior.splitlines())
+        self.robot_destination = robot_destination
         self.candidates = {
-            layout: (flat, tuple(i for i, piece in enumerate(flat) if piece != self.prior[i] or i in required))
-            for layout in candidates for flat in ("".join(layout.splitlines()),)
+            layout: {i: piece for i, piece in enumerate("".join(layout.splitlines()))
+                     if piece != prior[i] or i in required}
+            for layout in candidates
         }
         self.frames = deque(maxlen=5)
+
+    def closest_changes(self, observed):
+        return min(self.candidates.values(),
+                   key=lambda changes: (sum(not self._matches(i, piece, observed[i])
+                                            for i, piece in changes.items()), -len(changes)),
+                   default={})
+
+    def _matches(self, index, piece, seen):
+        # The arm's commanded piece keeps its identity at the destination.
+        if index == self.robot_destination and piece.islower():
+            return piece_side(piece) == piece_side(seen)
+        return seen == piece
 
     def reset(self):
         self.frames.clear()
 
     def add(self, cells):
-        frame = tuple(cell["piece"] if cell["score"] >= 0.55 else None for cell in cells)
+        frame = tuple(cell["piece"] if cell["score"] >= cell_score_threshold(cell["piece"]) else None
+                      for cell in cells)
         if len(frame) != 90:
             self.reset()
             return None
         self.frames.append(frame)
         if len(self.frames) < 3:
             return None
-        votes = [Counter(column) for column in zip(*self.frames)]
-        candidates = []
-        for layout, (pieces, changed) in self.candidates.items():
-            if not all(frame[i] == pieces[i] and votes[i][pieces[i]] >= 3 for i in changed):
-                continue
-            if any(sum(count for seen, count in counts.items() if seen not in (None, "x", piece)) >= 3
-                   for piece, counts in zip(pieces, votes)):
-                continue
-            candidates.append(layout)
-        return candidates[0] if len(candidates) == 1 else None
+        supported = {}
+        for layout, changes in self.candidates.items():
+            def matches(sample):
+                return all(self._matches(i, piece, sample[i]) for i, piece in changes.items())
+
+            if changes and matches(frame) and sum(map(matches, self.frames)) >= 3:
+                supported[layout] = changes.items()
+
+        # An already-played red reply can provide all of the black move's evidence
+        # plus its own. Keep the combined transition when both are supported.
+        maximal = [layout for layout, changes in supported.items()
+                   if not any(changes < other for other in supported.values())]
+        return maximal[0] if len(maximal) == 1 else None

@@ -46,6 +46,7 @@ class BoardRecognizer:
         aruco_config_path: str = None,
         board_orientation: str = None,
         allow_approximate_geometry: bool = None,
+        demo_profile: bool = False,
     ):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if pose_model_path is None:
@@ -70,7 +71,8 @@ class BoardRecognizer:
                 orientation=board_orientation or config.ARUCO_BOARD_ORIENTATION,
                 allow_approximate=(config.ARUCO_ALLOW_APPROXIMATE if allow_approximate_geometry is None
                                    else allow_approximate_geometry),
-                stable_frames=config.VISION_STABLE_FRAMES, min_score=config.VISION_MIN_SCORE)
+                stable_frames=config.VISION_STABLE_FRAMES, min_score=config.VISION_MIN_SCORE,
+                demo_profile=demo_profile)
             self.detector = None
         elif self.vision_backend == "rtmpose":
             self.detector = ChessboardDetector(pose_model_path=pose_model_path,
@@ -180,13 +182,14 @@ class BoardRecognizer:
         logger.info(time_info)
         return self.detector.parse_layout_string(layout_str), layout_str
 
-    def recognize_observation(self, image: np.ndarray = None) -> dict:
+    def recognize_observation(self, image: np.ndarray = None, *, allow_fallback: bool = True) -> dict:
         """ArUco preview with explicit quality; never commits a game state."""
         if self.vision_backend != "aruco":
             raise ValueError("observation API requires aruco backend")
         if image is None:
             image = self.camera_manager.capture_frame()
-        self.last_observation = self.aruco.observe(image, fallback=self._fallback_prediction)
+        fallback = self._fallback_prediction if allow_fallback else None
+        self.last_observation = self.aruco.observe(image, fallback=fallback)
         return self.last_observation
 
     def _fallback_prediction(self, image: np.ndarray):

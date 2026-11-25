@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>象棋机器人对局</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='live_game.css') }}">
+    <script defer src="{{ url_for('static', filename='js/live_game.js') }}"></script>
+</head>
+<body>
+    <main>
+        <header>
+            <h1>象棋机器人对局</h1>
+            <p id="phase" role="status">等待对局开始</p>
+            <p id="detail"></p>
+        </header>
+        <div class="game">
+            <canvas id="board" width="540" height="600" aria-label="已确认的棋局"></canvas>
+            <section aria-labelledby="history-title">
+                <h2 id="history-title">走子记录</h2>
+                <div class="actions">
+                    <button id="live" type="button">返回实时</button>
+                    <button id="export" type="button" disabled>导出棋谱</button>
+                </div>
+                <p id="view">实时棋局</p>
+                <ol id="moves"></ol>
+            </section>
+        </div>
+    </main>
+</body>
+</html>

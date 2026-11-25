@@ -15,8 +15,10 @@ Helper modules reach the shared state through ``web_simulation.app`` (this
 module) so test patches on ``web_app.<name>`` take effect.
 """
 
+import json
 import logging
 import os
+from pathlib import Path
 import sys
 
 # Make the project root importable when launched as `python web_simulation/app.py`.
@@ -30,7 +32,7 @@ if __name__ == "__main__":
     sys.modules.setdefault("web_simulation.app", sys.modules["__main__"])
 
 import config
-from flask import Flask, render_template
+from flask import Flask, jsonify, render_template
 from flask_cors import CORS
 
 from vision import BoardRecognizer
@@ -121,7 +123,22 @@ robot_tcp_client_lock = __import__("threading").RLock()
 @app.route("/")
 def index():
     """Serve the main web UI."""
+    if os.getenv("CHRO_GAME_JOURNAL"):
+        return render_template("live_game.html")
     return render_template("index.html")
+
+
+@app.get("/api/live-game")
+def live_game():
+    path = os.getenv("CHRO_GAME_JOURNAL")
+    if path:
+        try:
+            state = json.loads(Path(path).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            pass
+        else:
+            return jsonify(state), 200, {"Cache-Control": "no-store"}
+    return jsonify(phase="setup", detail="", moves=[]), 200, {"Cache-Control": "no-store"}
 
 
 # --------------------------------------------------------------------------- #

@@ -3,6 +3,7 @@
 import argparse
 from collections import Counter
 from contextlib import contextmanager
+from datetime import datetime
 import logging
 import os
 from pathlib import Path
@@ -10,14 +11,16 @@ import socket
 import subprocess
 import sys
 import time
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.vision.one_move_arm_trial import layout, wait_for_layout, wait_for_matching_layout
 from cchess import ChessBoard
+from game_manager.game_journal import GameJournal
 from xq_utils.rules import PIECE_CODES, START_FEN, board_from_fen, checked_transition, fen_from_board
 from robot.arm_teaching.teach import (
-    BOARD_SQUARES, CAPTURE_SLOTS, Electromagnet, PointStore, TeachController, TeachError,
-    arm_lock, capture_poses, duration,
+    APPROACH_POINTS, BOARD_SQUARES, CAPTURE_SLOTS, Electromagnet, PointStore,
+    TeachController, TeachError, arm_lock, capture_poses,
 )
 
 PIECE_VALUES = {"r": 9, "c": 4, "n": 4, "b": 2, "a": 2, "p": 1}
@@ -52,14 +55,14 @@ def web_port_open() -> bool:
 
 
 @contextmanager
-def game_web(path: Path):
+def game_web(path: Path, journal_path: Path):
     if web_port_open():
         print("Web port 5000 is already in use. Close the old Web process to restart it.", flush=True)
         yield
         return
 
     root = Path(__file__).resolve().parents[2]
-    env = dict(os.environ, CHRO_SKIP_STARTUP_PROMPT="1")
+    env = dict(os.environ, CHRO_SKIP_STARTUP_PROMPT="1", CHRO_GAME_JOURNAL=str(journal_path.resolve()))
     with path.open("ab") as log:
         web = subprocess.Popen(
             [sys.executable, "-u", "web_simulation/app.py"], cwd=root, env=env,
@@ -133,7 +136,13 @@ def endgame_fen(observed: str, turn: str) -> str:
     return fen
 
 
-def read_endgame(turn: str, seconds: int) -> str:
+def read_endgame(turn: str, seconds: int, journal=None) -> str:
+    names = dict(zip("rnbakcpRNBAKCP.", (
+        "黑车", "黑马", "黑象", "黑士", "黑将", "黑炮", "黑卒",
+        "红车", "红马", "红相", "红仕", "红帅", "红炮", "红兵", "空位",
+    )))
+    first_side = "红方" if turn == "w" else "黑方"
+
     def is_valid(observed: str) -> bool:
         try:
             endgame_fen(observed, turn)
@@ -141,15 +150,28 @@ def read_endgame(turn: str, seconds: int) -> str:
             return False
         return True
 
-    print("Reading the current board. Keep the arm at park and withdraw your hands.", flush=True)
-    observed = wait_for_matching_layout(
-        None, time.monotonic() + seconds, "Endgame setup", validate_layout=is_valid)
+    def confirm_low_scores(observed, cells):
+        uncertain = [f"{'九八七六五四三二一零'[cell['row']]}行"
+                     f"{'一二三四五六七八九'[cell['col']]}列"
+                     f"{names[cell['piece']]}（{cell['score']:.2f}）"
+                     for cell in cells if cell["score"] < 0.8]
+        print(f"残局识别结果（黑方在上，{first_side}先走）\n"
+              f"低分格：{'、'.join(uncertain)}", flush=True)
+        if journal is not None:
+            journal.status("review", "、".join(uncertain))
+        return not input("请核对低分格和先手。确认无误直接按回车，"
+                         "如需重扫请输入任意字符再按回车：").strip()
+
+    print("正在识别残局。请让机械臂停在待机位置，并把手移出棋盘画面。", flush=True)
+    observed = wait_with_operator(
+        wait_for_matching_layout, None, seconds, "Endgame setup", validate_layout=is_valid,
+        opening=True, starting_position=True, confirm_low_scores=confirm_low_scores, journal=journal)
     fen = endgame_fen(observed, turn)
-    print(f"Starting layout (black side on top)\n{observed}\nFEN {fen}", flush=True)
+    print(f"残局已确认（{first_side}先走）", flush=True)
     return fen
 
 
-def available_moves(fen: str) -> list:
+def available_moves(fen: str, journal=None) -> list:
     moves = list(legal_transitions(fen))
     if not moves:
         position = ChessBoard(fen)
@@ -157,6 +179,8 @@ def available_moves(fen: str) -> list:
         position.move_player.next()
         reason = "checkmate" if position.is_checking() else "stalemate"
         winner = "Black" if red_lost else "Red"
+        if journal is not None:
+            journal.update(phase="finished", detail="", result=dict(winner=winner.lower(), reason=reason))
         print(f"Game over: {winner} wins by {reason}.", flush=True)
     return moves
 
@@ -169,41 +193,100 @@ def post_transfer_layouts(reply):
     return expected
 
 
-def play(controller, engine, seconds, fen=START_FEN, endgame_turn=None, captures=0):
+def wait_with_operator(check, expected, seconds, phase, *, opening=False, journal=None, **kwargs):
+    """Retry in place. Only setup can pause for operator input."""
+    if journal is not None:
+        current_phase = journal.state["phase"]
+
+        def report(frame, source, low, differences):
+            if frame is None:
+                detail = "等待摄像头提供新画面"
+            elif source != "aruco":
+                detail = "等待定位棋盘"
+            elif low or differences:
+                detail = " · ".join((differences + low)[:4])
+            else:
+                detail = ""
+            journal.status(current_phase, detail)
+
+        kwargs["report"] = report
+    while True:
+        try:
+            return check(expected, time.monotonic() + seconds, phase, **kwargs)
+        except TimeoutError as exc:
+            print(f"Paused: {exc}", flush=True)
+            if journal is not None:
+                journal.status(current_phase, "复核超时，等待重新确认")
+            if opening:
+                input("请检查实物棋盘和摄像头，按回车重试，或按 Ctrl+C 停止：")
+            else:
+                print("仍在等待视觉确认。请检查棋盘，修正后程序会自动继续。", flush=True)
+
+
+def play(controller, engine, seconds, fen=START_FEN, endgame_turn=None, captures=0, journal=None,
+         initial_moves=()):
+    pending = journal.state["pending"] if journal is not None else None
+    if pending:
+        plan = checked_transition(fen, pending["move"])
+        fen = plan["fen"]
+        print(f"恢复中断的黑方走法 {pending['move']}。请核对机械臂已停稳，实物已摆成该步完成后的局面，"
+              "若为吃子，还须核对对应吃子槽。", flush=True)
     if endgame_turn is not None:
-        fen = read_endgame(endgame_turn, seconds)
+        fen = read_endgame(endgame_turn, seconds, journal=journal)
     else:
         phase = "Opening check" if fen == START_FEN else "Resume position check"
         print(f"{phase}. Keep the arm at park.", flush=True)
-        wait_for_layout(layout(fen), time.monotonic() + seconds, phase)
+        wait_with_operator(wait_for_layout, layout(fen), seconds, phase, opening=True,
+                           starting_position=True, journal=journal)
+    if journal is not None:
+        if pending:
+            journal.confirm(pending["move"])
+        elif journal.state["fen"] is None:
+            initial_fen = START_FEN if initial_moves else fen
+            journal.confirm(*initial_moves, starting_fen=initial_fen, captures=captures)
     while True:
-        legal = available_moves(fen)
+        legal = available_moves(fen, journal)
         if not legal:
+            controller.celebrate()
             return
         if fen.split()[1] == "w":
+            if journal is not None:
+                journal.status("red")
             by_layout = {layout(plan["fen"]): plan for plan in legal}
             print("Red to move. Withdraw your hand after placing the piece.", flush=True)
-            observed = wait_for_matching_layout(
-                by_layout, time.monotonic() + seconds, "Red move check", prior=layout(fen))
+            observed = wait_with_operator(
+                wait_for_matching_layout, by_layout, seconds, "Red move check", prior=layout(fen), journal=journal)
             human = by_layout[observed]
             fen = human["fen"]
+            if journal is not None:
+                journal.confirm(human["move"])
             print(f"Red played {human['move']}.", flush=True)
-            legal = available_moves(fen)
+            legal = available_moves(fen, journal)
             if not legal:
+                controller.celebrate()
                 return
 
+        if journal is not None:
+            journal.status("thinking")
         reply = select_reply(fen, legal, engine)
         move = reply["move"]
         print(f"Black selected {move}.", flush=True)
         transfer_prior = layout(fen)
+        capture = reply["capture"] is not None
+        if journal is not None:
+            journal.status("selected", move)
         if reply["capture"] is not None:
             if captures >= len(CAPTURE_SLOTS):
                 raise RuntimeError("The capture area is full")
             slot = CAPTURE_SLOTS[captures]
             required = tuple(row * 9 + col for row, col in (reply["source"], reply["target"]))
-            wait_for_layout(transfer_prior, time.monotonic() + seconds,
-                            f"Pre-capture check for {move}", prior=transfer_prior, required=required)
-            controller.transfer(move[2:], slot, duration(), return_to_park=True)
+            wait_with_operator(wait_for_layout, transfer_prior, seconds,
+                               f"Pre-capture check for {move}",
+                               prior=transfer_prior, required=required, journal=journal)
+            if journal is not None:
+                journal.update(phase="moving", pending=dict(move=move, slot=slot),
+                               captures=captures + 1, detail=move)
+            controller.transfer(move[2:], slot, return_to_park=True)
             captures += 1
             print(f"Capture deposited in {slot}.", flush=True)
             board = board_from_fen(fen)
@@ -211,28 +294,68 @@ def play(controller, engine, seconds, fen=START_FEN, endgame_turn=None, captures
             del board[f"{col},{row}"]
             cleared = fen_from_board(board, "b", 0, 1)
             cleared_layout = layout(cleared)
-            wait_for_layout(cleared_layout, time.monotonic() + seconds,
-                            f"Capture removal for {move}", prior=transfer_prior)
+            if journal is not None:
+                journal.status("clearing", move[2:])
+            print(f"Arm parked. Waiting for vision to confirm {move[2:]} is clear.", flush=True)
+            wait_with_operator(wait_for_layout, cleared_layout, seconds,
+                               f"Capture removal for {move}",
+                               prior=transfer_prior, journal=journal)
             transfer_prior = cleared_layout
-        controller.transfer(move[:2], move[2:], duration(), return_to_park=True)
+        if journal is not None and not capture:
+            journal.update(phase="moving", pending=dict(move=move, slot=None), detail=move)
+        elif journal is not None:
+            journal.status("moving", move)
+        controller.transfer(move[:2], move[2:], return_to_park=True)
+        if journal is not None:
+            journal.status("verifying", move)
         print("Arm parked. Verifying the next position.", flush=True)
         expected = post_transfer_layouts(reply)
-        observed = wait_for_matching_layout(
-            expected, time.monotonic() + 45, f"Post-transfer check for {move}", prior=transfer_prior)
+        row, col = reply["target"]
+        observed = wait_with_operator(
+            wait_for_matching_layout, expected, 45, f"Post-transfer check for {move}",
+            prior=transfer_prior, robot_destination=row * 9 + col, journal=journal)
         fen = expected[observed]
         if fen != reply["fen"]:
             red = next(plan for plan in legal_transitions(reply["fen"]) if plan["fen"] == fen)
+            if journal is not None:
+                journal.confirm(move, red["move"])
             print(f"Black move verified; red already played {red['move']}.", flush=True)
+        elif journal is not None:
+            journal.confirm(move)
 
 
 def check_points(store):
     required = ["park"]
+    required.extend(APPROACH_POINTS)
     required.extend(square + suffix for square in BOARD_SQUARES for suffix in ("a", "g"))
     required.extend(name for slot in CAPTURE_SLOTS for name in capture_poses(slot))
     missing = [name for name in required if name not in store.points]
     if missing:
         raise RuntimeError(f"{len(missing)} missing poses: {', '.join(missing[:12])}. "
                            "Use 'coverage' in the teaching console to list all missing poses.")
+
+
+def choose_opening_turn(args, parser) -> Optional[str]:
+    if args.resume_moves and (args.mode == "endgame" or args.turn is not None):
+        parser.error("--resume-moves requires standard mode")
+    mode = args.mode
+    if mode is None:
+        if args.resume_moves:
+            mode = "standard"
+        else:
+            selected = input("选择开局方式（1 标准开局，2 残局）：").strip()
+            if selected not in ("1", "2"):
+                parser.error("请选择 1 或 2")
+            mode = "standard" if selected == "1" else "endgame"
+    endgame_turn = None
+    if mode == "endgame":
+        turn = args.turn or input("选择先手（1 红方，2 黑方）：").strip().lower()
+        if turn not in ("red", "black", "r", "b", "1", "2"):
+            parser.error("请选择 1 或 2")
+        endgame_turn = "w" if turn in ("red", "r", "1") else "b"
+    elif args.turn is not None:
+        parser.error("--turn requires endgame mode")
+    return endgame_turn
 
 
 def main():
@@ -244,6 +367,7 @@ def main():
     parser.add_argument("--seconds", type=int, default=240, help="Timeout per human step")
     parser.add_argument("--resume-moves", nargs="+", default=[], metavar="ICCS",
                         help="Replay already executed moves from the opening before checking the physical board")
+    parser.add_argument("--resume-game", type=Path, help="Resume a saved game after checking its physical board")
     parser.add_argument("--mode", choices=("standard", "endgame"), help="Skip the startup mode prompt")
     parser.add_argument("--turn", choices=("red", "black"), help="First side to move in endgame mode")
     parser.add_argument("--capture-start", type=int, choices=range(1, 18), metavar="SLOT",
@@ -252,49 +376,45 @@ def main():
     args = parser.parse_args()
     if args.seconds < 1:
         parser.error("--seconds must be positive")
+    if args.resume_game and (args.resume_moves or args.mode or args.turn or args.capture_start is not None):
+        parser.error("--resume-game already specifies the position, side to move and capture count")
     try:
         fen, captures = replay_moves(args.resume_moves)
     except ValueError as exc:
         parser.error(f"Invalid resume history: {exc}")
     store = PointStore(args.arm_dir / "teach_points.json")
     check_points(store)
-    print("All 90 square approaches and grab poses, park, and 16 capture slots are registered.", flush=True)
+    print("All 4 region approaches, 90 square approaches and grab poses, park, and 16 capture slots are registered.", flush=True)
     if args.resume_moves:
         print("Expected resume layout (black side on top):\n" + layout(fen), flush=True)
     if not args.execute:
         return
-    if args.resume_moves and (args.mode == "endgame" or args.turn is not None):
-        parser.error("--resume-moves requires standard mode")
-    mode = args.mode
-    if mode is None:
-        if args.resume_moves:
-            mode = "standard"
-        else:
-            selected = input("Start [1] standard opening or [2] existing endgame: ").strip()
-            if selected not in ("1", "2"):
-                parser.error("Choose 1 or 2")
-            mode = "standard" if selected == "1" else "endgame"
-    endgame_turn = None
-    if mode == "endgame":
-        turn = args.turn or input("Side to move [r] red or [b] black: ").strip().lower()
-        if turn not in ("red", "black", "r", "b"):
-            parser.error("Choose r or b")
-        endgame_turn = "w" if turn in ("red", "r") else "b"
-    elif args.turn is not None:
-        parser.error("--turn requires endgame mode")
-    if args.capture_start is not None:
-        captures = args.capture_start - 1
-    print(f"Capture storage starts at slot {captures + 1} (17 means full).", flush=True)
-
-    from vision.server import default_camera_index, game_vision
-    camera = args.camera if args.camera is not None else default_camera_index()
+    from vision.runtime_diagnostics import record_runtime
+    from vision.server import default_camera_link, game_vision
+    camera_link = default_camera_link() if args.camera is None else None
+    camera = int(camera_link.resolve().name[5:]) if camera_link is not None else (args.camera or 0)
     log_dir = args.arm_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    with arm_lock(), vision_log(log_dir / "vision.log"), game_vision(camera), game_web(log_dir / "web.log"):
+    journal_path = args.resume_game or args.arm_dir / "games" / (
+        datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json")
+    with arm_lock(), record_runtime(log_dir / "diagnostics.log", camera), vision_log(
+        log_dir / "vision.log"
+    ), game_web(log_dir / "web.log", journal_path), game_vision(camera, camera_link=camera_link):
         print(f"Vision started on camera {camera}.", flush=True)
         # Reload after locking so no teaching session can race the preflight.
         store = PointStore(store.path)
         check_points(store)
+        try:
+            journal = GameJournal.load(journal_path) if args.resume_game else GameJournal(journal_path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            parser.error(f"无法读取续局存档 {journal_path}: {exc}")
+        journal.status("setup", "示教点与摄像头就绪，正在检查开局")
+        if args.resume_game:
+            fen, captures = journal.state["fen"], journal.state["captures"]
+        elif args.capture_start is not None:
+            captures = args.capture_start - 1
+        endgame_turn = None if args.resume_game else choose_opening_turn(args, parser)
+        print(f"对局存档 {journal_path}。下一个吃子槽为 {captures + 1}（17 表示已满）。", flush=True)
         engine = None
         magnet = None
         try:
@@ -305,11 +425,17 @@ def main():
                     raise RuntimeError("Pikafish failed to start")
             else:
                 print("Using the built-in capture-priority trial policy.", flush=True)
+            journal.status("setup", "示教点、摄像头和走棋策略就绪，等待棋盘核对")
             from robot.arm_teaching.Arm_Lib import Arm_Device
             arm = Arm_Device()
             magnet = Electromagnet()
             play(TeachController(arm, store, electromagnet=magnet), engine, args.seconds,
-                 fen, endgame_turn=endgame_turn, captures=captures)
+                 fen, endgame_turn=endgame_turn, captures=captures, journal=journal,
+                 initial_moves=args.resume_moves)
+        except (Exception, KeyboardInterrupt) as exc:
+            if journal.state["result"] is None:
+                journal.status("stopped", str(exc) or "对局已停止")
+            raise
         finally:
             try:
                 if magnet is not None:
@@ -317,10 +443,17 @@ def main():
             finally:
                 if engine is not None:
                     engine.stop()
+        if journal.state["result"] is not None:
+            try:
+                input("对局已结束。按回车关闭展示页面服务。")
+            except EOFError:
+                pass
 
 
 if __name__ == "__main__":
     try:
         main()
+    except KeyboardInterrupt:
+        sys.exit("Stopped by operator.")
     except (RuntimeError, TimeoutError, EOFError, TeachError) as exc:
         sys.exit(f"Stopped: {exc}")

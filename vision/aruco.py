@@ -1,6 +1,7 @@
 """Shared ArUco geometry and image recognition, without robot commands."""
 import hashlib
 import json
+import os
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -12,13 +13,28 @@ from core.keypoint_helper import extract_chessboard
 from .observation import ObservationStream
 
 
-def classify_board(image: np.ndarray, corners: np.ndarray, classifier):
+def balance_board_light(board: np.ndarray) -> np.ndarray:
+    """Even out broad illumination differences and gently lift the midtones."""
+    lab = cv2.cvtColor(board, cv2.COLOR_BGR2Lab)
+    light = lab[:, :, 0]
+    background = cv2.morphologyEx(light, cv2.MORPH_CLOSE, np.ones((41, 41), np.uint8))
+    background = cv2.GaussianBlur(background.astype(np.float32), (0, 0), 24)
+    target = np.median(background[60:-60, 60:-60])
+    correction = np.clip((target - background) * 0.70, -22, 22)
+    lift = 5 * (1 - light.astype(np.float32) / 255)
+    lab[:, :, 0] = np.clip(np.rint(light + correction + lift), 0, 255).astype(np.uint8)
+    return cv2.cvtColor(lab, cv2.COLOR_Lab2BGR)
+
+
+def classify_board(image: np.ndarray, corners: np.ndarray, classifier, *, balance_light=False):
     """Use the validated 960 px preview warp path for both Web and CLI."""
     preview = cv2.resize(image, (960, round(image.shape[0] * 960 / image.shape[1])),
                          interpolation=cv2.INTER_AREA)
     scaled = np.float32(corners) * np.float32([
         preview.shape[1] / image.shape[1], preview.shape[0] / image.shape[0]])
     warped, _, _ = extract_chessboard(preview, scaled)
+    if balance_light:
+        warped = balance_board_light(warped)
     _, _, scores, layout = classifier.pred(warped, is_rgb=False)
     return warped, scores, layout
 
@@ -27,7 +43,7 @@ class ArucoRecognizer:
     """One model/session and a serialized stream of fresh image observations."""
 
     def __init__(self, config_path, model_path, orientation="unknown", allow_approximate=False,
-                 stable_frames=3, min_score=0.8):
+                 stable_frames=3, min_score=0.8, demo_profile=False):
         self.config_path = Path(config_path)
         raw = self.config_path.read_bytes()
         self.config = json.loads(raw.decode("utf-8-sig"))
@@ -38,6 +54,8 @@ class ArucoRecognizer:
         self.allow_approximate = allow_approximate
         self.config_sha256 = hashlib.sha256(raw).hexdigest()
         self.model_path = str(model_path)
+        self._input_size = (288, 324) if demo_profile else (280, 315)
+        self._bright_board_profile = not demo_profile and os.getenv("CHRO_ARUCO_BRIGHT_BOARD") == "1"
         self._model = None
         self._lock = threading.RLock()
         self._orientation = orientation
@@ -64,8 +82,12 @@ class ArucoRecognizer:
                 if calibration["board_calibration_success"]:
                     if self._model is None:
                         from core.runonnx.full_classifier import FULL_CLASSIFIER_ONNX
-                        self._model = FULL_CLASSIFIER_ONNX(self.model_path)
-                    _, scores, layout = classify_board(image, calibration["board_pixel_corners"], self._model)
+                        self._model = FULL_CLASSIFIER_ONNX(self.model_path, input_size=self._input_size)
+                    if self._bright_board_profile:
+                        _, scores, layout = classify_board(
+                            image, calibration["board_pixel_corners"], self._model, balance_light=True)
+                    else:
+                        _, scores, layout = classify_board(image, calibration["board_pixel_corners"], self._model)
                     source = "aruco"
                 elif fallback is not None:
                     layout, scores = fallback(image)
