@@ -19,7 +19,8 @@
     --danger: #e04f5f;
     --ink: #101828;
     --shadow: 0 18px 40px rgba(40, 55, 90, 0.12);
-    --radius: 8px;
+    --radius: 12px;
+    --compare-height: clamp(320px, calc(100vh - 310px), 500px);
 }
 
 body {
@@ -126,9 +127,16 @@ select {
 
 .main-content {
     display: grid;
-    grid-template-columns: minmax(250px, 0.78fr) minmax(620px, 1.85fr) minmax(320px, 1fr);
+    grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
     gap: 18px;
     align-items: start;
+}
+
+/* 操作与文字信息集中在左侧；右侧两幅画面保持对齐。 */
+.sidebar {
+    min-width: 0;
+    display: grid;
+    gap: 16px;
 }
 
 .panel {
@@ -142,15 +150,32 @@ select {
 .control-panel,
 .info-panel,
 .vision-panel {
-    min-width: 0; /* 保持三栏与单栏布局都能容纳在窗口内。 */
+    min-width: 0;
     display: grid;
     gap: 18px;
 }
 
 .control-panel {
+    padding: 16px;
+}
+
+.vision-panel {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 16px;
     position: sticky;
     top: 18px;
-    padding: 16px;
+}
+
+.vision-panel .section-heading {
+    min-height: 64px;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.vision-panel .section-heading p {
+    line-height: 1.5;
+    overflow-wrap: anywhere;
 }
 
 .panel-section + .panel-section {
@@ -230,12 +255,18 @@ select {
 
 .input-group {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-top: 10px;
 }
 
 .input-group .btn {
     flex: 0 0 auto;
+}
+
+.input-group input {
+    min-width: 0;
+    flex: 1 1 100%;
 }
 
 .btn {
@@ -313,7 +344,7 @@ select {
 .camera-container {
     position: relative;
     width: 100%;
-    height: clamp(300px, 38vh, 480px);
+    height: var(--compare-height);
     overflow: hidden;
     background: #111827;
     border: 1px solid #111827;
@@ -345,12 +376,12 @@ select {
 }
 
 .virtual-section {
-    min-height: 520px;
+    min-height: 0;
 }
 
 .piece-counter {
-    min-width: 94px;
-    padding: 8px 11px;
+    min-width: 72px;
+    padding: 7px 9px;
     text-align: right;
     background: var(--surface-soft);
     border: 1px solid var(--border);
@@ -386,8 +417,9 @@ select {
     display: flex;
     justify-content: center;
     align-items: center;
-    min-height: 500px;
-    padding: 14px;
+    height: var(--compare-height);
+    min-height: 0;
+    padding: 12px;
     background:
         linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.68)),
         #e7edf5;
@@ -396,9 +428,11 @@ select {
 }
 
 #visual-board {
-    width: min(100%, 520px);
+    /* 只缩放显示尺寸，保留画布分辨率和原有鼠标坐标换算。 */
+    width: auto;
     height: auto;
-    max-height: 580px;
+    max-width: 100%;
+    max-height: 100%;
     background: #e5c9a8;
     border: 2px solid #8b5a2b;
     border-radius: 5px;
@@ -407,10 +441,8 @@ select {
 }
 
 .info-panel {
-    position: sticky;
-    top: 18px;
-    max-height: calc(100vh - 135px);
-    grid-template-rows: minmax(150px, 0.85fr) minmax(150px, 0.8fr) minmax(180px, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
 }
 
 .info-panel .panel {
@@ -429,8 +461,8 @@ select {
 
 .move-list {
     flex: 1;
-    min-height: 0;
-    max-height: none;
+    min-height: 80px;
+    max-height: 220px;
     padding: 10px;
     background: var(--surface-soft);
     border: 1px solid var(--border);
@@ -449,8 +481,8 @@ select {
 
 .analysis-content {
     flex: 1;
-    min-height: 0;
-    max-height: none;
+    min-height: 80px;
+    max-height: 260px;
     padding: 13px;
     background: #fffaf1;
     border: 1px solid #f4d49a;
@@ -472,7 +504,8 @@ select {
 
 .log-output {
     flex: 1;
-    min-height: 0;
+    min-height: 140px;
+    max-height: 260px;
     height: auto;
     padding: 13px;
     color: #b6f2d8;
@@ -484,6 +517,7 @@ select {
 
 .log-entry {
     margin: 3px 0;
+    overflow-wrap: anywhere;
 }
 
 .log-time {
@@ -503,18 +537,6 @@ select {
     color: #ffd083;
 }
 
-@media (max-width: 1180px) {
-    .main-content {
-        grid-template-columns: minmax(240px, 0.9fr) minmax(520px, 1.8fr);
-    }
-
-    .info-panel {
-        grid-column: 1 / -1;
-        position: static;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-}
-
 @media (max-width: 900px) {
     .app-shell {
         padding: 12px;
@@ -529,27 +551,32 @@ select {
         justify-content: flex-start;
     }
 
-    .main-content,
-    .info-panel {
+    .main-content {
         grid-template-columns: 1fr;
     }
 
-    .control-panel,
-    .info-panel {
+    .vision-panel {
         position: static;
-        max-height: none;
+        grid-row: 1;
     }
 
-    .camera-container {
-        min-height: 280px;
+    .header {
+        gap: 12px;
     }
 
-    .visual-board-container {
-        min-height: 360px;
+    .info-panel .section-heading {
+        flex-wrap: wrap;
     }
 }
 
 @media (max-width: 560px) {
+    :root {
+        --compare-height: 300px;
+    }
+
+    .vision-panel {
+        grid-template-columns: 1fr;
+    }
     .header h1 {
         font-size: 21px;
     }
@@ -567,6 +594,19 @@ select {
     .input-group {
         flex-direction: column;
     }
+}
+
+.log-console .section-heading {
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.log-console .section-heading h2 {
+    flex: 1 0 100%;
+}
+
+.board-tools {
+    padding-top: 10px;
 }
 
 /* 完整操作区随窗口宽度换行；标定大文本不撑宽布局。 */

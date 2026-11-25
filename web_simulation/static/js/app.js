@@ -57,9 +57,6 @@ class ChessSimulation {
         bind('btn-start-hardware-game', 'click', () => this.startHardwareGame());
         bind('btn-start-simulation-game', 'click', () => this.startSimulationGame());
         bind('btn-reset-game', 'click', () => this.resetGame());
-        bind('btn-ai-move', 'click', () => this.getAIMove());
-        bind('btn-simulate-move', 'click', () => this.simulateRobotMove());
-        bind('btn-test-sequence', 'click', () => this.testRobotSequence());
         bind('btn-toggle-log-pause', 'click', () => this.toggleLogPause());
         
         // 网络摄像头连接按钮
@@ -1004,7 +1001,7 @@ class ChessSimulation {
         const aiColor = 'black';
         this.aiColor = aiColor;
         this.playerColor = 'red';
-        const depth = parseInt(document.getElementById('ai-depth').value) || 8;
+        const depth = 8; // 网页不再提供 AI 设置面板，保持原默认值。
         this.log(`启动 AI 思考 (执色: ${aiColor === 'red' ? '红' : '黑'}, 深度: ${depth})...`, 'info');
         
         try {
