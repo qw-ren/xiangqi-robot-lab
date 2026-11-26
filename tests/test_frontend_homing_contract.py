@@ -19,11 +19,27 @@ class FrontendHomingContractTests(unittest.TestCase):
         self.assertNotIn("checkRobotConnection", init_body)
         self.assertIn("this.log('系统初始化...'", init_body)
 
-    def test_frontend_exposes_separate_hardware_and_simulation_start_buttons(self):
-        self.assertIn('id="btn-start-hardware-game"', self.html)
-        self.assertIn('id="btn-start-simulation-game"', self.html)
-        self.assertIn("startHardwareGame()", self.source)
-        self.assertIn("startSimulationGame()", self.source)
+    def test_preview_displays_game_info_without_game_controls_or_diagnostic_panels(self):
+        for control in ("btn-start-hardware-game", "btn-start-simulation-game", "btn-reset-game",
+                        "ai-analysis", "log-output"):
+            self.assertNotIn(f'id="{control}"', self.html)
+        for display in ("visual-board", "physical-game-status", "physical-game-detail", "move-list"):
+            self.assertIn(f'id="{display}"', self.html)
+
+    def test_game_and_vision_status_are_in_sidebar_and_virtual_board_has_no_controls(self):
+        sidebar, visuals = self.html.split('<section class="vision-panel">', 1)
+        for status in ("physical-game-status", "physical-game-detail", "physical-game-preflight",
+                       "vision-observation-status"):
+            self.assertIn(f'id="{status}"', sidebar)
+            self.assertNotIn(f'id="{status}"', visuals)
+        self.assertIn("<title>中国象棋对弈台</title>", sidebar)
+        self.assertIn("<h1>中国象棋对弈台</h1>", sidebar)
+        self.assertNotIn("真实棋盘识别 · AI 决策 · 对局状态监控", sidebar)
+        virtual_board = visuals.split('class="panel virtual-section"', 1)[1].split("</article>")[0]
+        self.assertIn('id="visual-board"', virtual_board)
+        self.assertNotIn("识别后的棋盘状态会同步在这里", virtual_board)
+        for control in ("<input", "<button", "<a "):
+            self.assertNotIn(control, virtual_board)
 
     def test_hardware_start_goes_directly_to_homing_without_probe(self):
         start_body = self.source[

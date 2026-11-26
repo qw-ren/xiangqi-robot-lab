@@ -3,18 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>中国象棋 Web 识别对弈台</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=side-by-side-20261124">
+    <title>中国象棋对弈台</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=board-display-20261126">
 </head>
 <body>
     <div class="app-shell">
         <header class="header">
             <div class="brand">
                 <span class="brand-mark">棋</span>
-                <div>
-                    <h1>中国象棋 Web 识别对弈台</h1>
-                    <p>真实棋盘识别 · AI 决策 · 对局状态监控</p>
-                </div>
+                <h1>中国象棋对弈台</h1>
             </div>
             <div class="status-bar">
                 <span id="connection-status" class="status-indicator disconnected">● 未连接</span>
@@ -24,33 +21,20 @@
 
         <main class="main-content">
             <div class="sidebar">
-                <aside class="control-panel panel">
-                    <section class="panel-section">
-                        <h2>对局控制</h2>
-                        <div class="field-stack">
-                            <label for="ai-color">程序执色</label>
-                            <select id="ai-color">
-                                <option value="black">黑方</option>
-                                <option value="red">红方</option>
-                            </select>
-                        </div>
-                        <div class="field-stack">
-                            <label for="first-player">先手方</label>
-                            <select id="first-player">
-                                <option value="red">红方先手</option>
-                                <option value="black">黑方先手</option>
-                            </select>
-                        </div>
-                        <div class="control-buttons">
-                            <button id="btn-start-hardware-game" class="btn btn-primary btn-large">开始串口对局</button>
-                            <button id="btn-start-simulation-game" class="btn btn-secondary btn-large">模拟测试（无下位机）</button>
-                            <button id="btn-reset-game" class="btn btn-warning btn-large">重置游戏</button>
-                        </div>
-                    </section>
+                <aside class="panel game-information" aria-label="对局与视觉状态">
+                    {% if physical_game %}
+                    <p id="physical-game-status" role="status">等待确认开局</p>
+                    <p id="physical-game-detail" hidden></p>
+                    <p id="physical-game-preflight" aria-label="开赛自检"></p>
+                    <p id="physical-game-result" role="status" hidden></p>
+                    {% endif %}
+                    <p id="vision-observation-status" role="status">视觉尚未运行。ArUco 结果将作为观测预览显示。</p>
+                    <p id="camera-preview-status" role="status">正在检测可用摄像头…</p>
+                </aside>
 
+                <aside class="control-panel panel">
                     <section class="panel-section source-section">
                         <h2>画面输入</h2>
-                        <p id="vision-observation-status" role="status">视觉尚未运行。ArUco 结果将作为观测预览显示。</p>
                         <div class="field-stack">
                             <label for="input-source">输入源</label>
                             <select id="input-source" onchange="changeInputSource()">
@@ -78,39 +62,18 @@
                         <div class="section-heading compact">
                             <h2>走法历史</h2>
                         </div>
+                        {% if physical_game %}
+                        <button id="physical-game-live" class="btn btn-secondary btn-small" type="button" hidden>返回实时</button>
+                        <p id="physical-game-replay" hidden></p>
+                        {% endif %}
                         <div id="move-list" class="move-list"></div>
                     </section>
 
-                    <section class="panel analysis-panel">
-                        <div class="section-heading compact">
-                            <h2>AI 分析</h2>
-                        </div>
-                        <div id="ai-analysis" class="analysis-content">
-                            <p>等待 AI 分析...</p>
-                        </div>
-                    </section>
-
-                    <section class="panel log-console">
-                        <div class="section-heading compact">
-                            <h2>系统日志</h2>
-                            <button id="btn-toggle-log-pause" class="btn btn-secondary btn-small">暂停日志</button>
-                            <button id="btn-clear-log" class="btn btn-secondary btn-small">清空</button>
-                            <button id="btn-export-log" class="btn btn-secondary btn-small">导出</button>
-                        </div>
-                        <div id="log-output" class="log-output"></div>
-                    </section>
                 </aside>
             </div>
 
             <section class="vision-panel">
-                <article class="panel camera-section">
-                    <div class="section-heading">
-                        <div>
-                            <h2>真实画面</h2>
-                            <p id="camera-preview-status" role="status">正在检测可用摄像头…</p>
-                        </div>
-                        <span class="live-chip">CAMERA</span>
-                    </div>
+                <article class="panel camera-section" aria-label="真实画面">
                     <div class="camera-container">
                         <img id="camera-feed" src="" alt="摄像头画面" style="display: none;">
                         <canvas id="camera-view" width="640" height="480"></canvas>
@@ -122,23 +85,9 @@
                     </div>
                 </article>
 
-                <article class="panel virtual-section">
-                    <div class="section-heading">
-                        <div>
-                            <h2>虚拟识别画面</h2>
-                            <p>识别后的棋盘状态会同步在这里</p>
-                        </div>
-                        <div class="piece-counter">
-                            <span>棋子数量</span>
-                            <strong id="piece-count">0</strong>
-                        </div>
-                    </div>
+                <article class="panel virtual-section" aria-label="虚拟棋局">
                     <div class="visual-board-container">
-                        <canvas id="visual-board" width="520" height="580"></canvas>
-                    </div>
-                    <div class="board-tools">
-                        <input type="text" id="fen-display" readonly aria-label="FEN" title="当前正式局面的 FEN">
-                        <div class="visible-controls"><button id="btn-copy-fen" class="btn btn-secondary">复制 FEN</button><a class="btn btn-secondary" href="/api/game/export" download>导出棋谱与全部棋位</a></div>
+                        <canvas id="visual-board" width="520" height="580" aria-label="当前棋局"></canvas>
                     </div>
                 </article>
             </section>
@@ -146,7 +95,7 @@
     </div>
 
     <script>window.CHRO_DESKTOP_SIMULATION = {{ desktop_virtual_input|default(false)|tojson }};</script>
-    <script src="/static/js/app.js?v=compact-controls-20261124"></script>
-    <script src="/static/js/full_features.js?v=compact-controls-20261124"></script>
+    <script src="/static/js/app.js?v=board-display-20261126"></script>
+    <script src="/static/js/full_features.js?v=board-display-20261126"></script>
 </body>
 </html>

@@ -6,9 +6,13 @@ const vm = require('node:vm');
 
 function page() {
     const elements = new Map();
+    const removed = new Set(['ai-color', 'first-player', 'btn-start-hardware-game',
+        'btn-start-simulation-game', 'btn-reset-game', 'ai-analysis', 'log-output',
+        'fen-display', 'btn-copy-fen', 'piece-count']);
     const document = {
         addEventListener() {},
         getElementById(id) {
+            if (removed.has(id)) return null;
             if (!elements.has(id)) elements.set(id, {});
             return elements.get(id);
         }
@@ -22,7 +26,6 @@ function page() {
     Object.assign(ui, {
         currentInputSource: 'local', isGameRunning: false,
         log() {}, drawVisualBoard() {}, drawBoard() {}, updateMoveList() {},
-        setGameSettingControlsEnabled() {}, showAnalysis() {},
         currentTurnFromFen() { return 'red'; }, updateGameStatusFromTurn() {}
     });
     const state = { is_game_running: false, board_state: { '0,0': 'r' }, current_fen: 'formal' };
@@ -37,7 +40,6 @@ test('formal-state polling preserves an idle ArUco preview', async () => {
     ui.showVisionObservation(preview);
     await ui.syncFullState();
     assert.equal(JSON.stringify(ui.boardState), JSON.stringify({ '4,7': 'C' }));
-    assert.equal(document.getElementById('fen-display').value, '');
     assert.match(document.getElementById('vision-observation-status').textContent, /未写入棋局/);
 });
 

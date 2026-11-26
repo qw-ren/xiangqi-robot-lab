@@ -17,23 +17,19 @@ from robot.arm_teaching.teach import taught_squares
 from vision.board_evidence import BoardEvidence, cell_score_threshold
 
 diagnostics = logging.getLogger("chro.diagnostics")
-STARTING_EMPTY_SCORE = 0.75
+STARTING_CELL_SCORE = 0.75
+OPENING_REVIEW_FRAMES = 12
+
+
+def starting_cell_needs_review(cell):
+    piece = cell["piece"]
+    return piece == "x" or (piece != "." and cell["score"] < STARTING_CELL_SCORE)
 
 
 def starting_scores_ok(observation):
-    reasons = observation.get("reasons", ())
-    if "unknown_cells" in reasons:
-        return False
-    if "low_scores" not in reasons:
-        return True
     cells = observation.get("cells", ())
-    threshold = observation.get("quality", {}).get("min_score", 0.8)
-    return len(cells) == 90 and all(
-        cell["piece"] != "x" and cell["score"] >= (
-            min(threshold, STARTING_EMPTY_SCORE) if cell["piece"] == "." else threshold
-        )
-        for cell in cells
-    )
+    return ("unknown_cells" not in observation.get("reasons", ()) and len(cells) == 90
+            and not any(starting_cell_needs_review(cell) for cell in cells))
 
 
 def layout(fen):
@@ -43,16 +39,19 @@ def layout(fen):
 
 
 def wait_for_layout(expected, deadline, phase="Waiting for board", prior=None, required=(),
-                    starting_position=False, report=None):
+                    starting_position=False, report=None, confirm_low_scores=None):
     return wait_for_matching_layout({expected}, deadline, phase, prior=prior, required=required,
-                                    starting_position=starting_position, report=report)
+                                    starting_position=starting_position, report=report,
+                                    confirm_low_scores=confirm_low_scores)
 
 
 def wait_for_matching_layout(expected, deadline, phase="Waiting for board", prior=None, required=(),
                              validate_layout=None, robot_destination=None, starting_position=False,
                              confirm_low_scores=None, report=None):
     consecutive = 0
-    review_streak = 0
+    review_frames = 0
+    review_needed = False
+    retry_seconds = max(0.0, deadline - time.monotonic())
     last_frame = None
     previous_layout = None
     last_observation = {}
@@ -104,9 +103,11 @@ def wait_for_matching_layout(expected, deadline, phase="Waiting for board", prio
             relevant = evidence.closest_changes(actual) if evidence is not None and len(actual) == 90 else None
             low = [f"{chr(97 + cell['col'])}{9 - cell['row']}:{cell['piece']}@{cell['score']:.2f}"
                    for cell in cells if (relevant is None or cell["row"] * 9 + cell["col"] in relevant)
-                   and (cell["score"] < (
-                       cell_score_threshold(cell["piece"]) if evidence is not None else threshold
-                   ) or cell["piece"] == "x")]
+                   and (cell["piece"] == "x" or (
+                       starting_cell_needs_review(cell) if starting_position else cell["score"] < (
+                           cell_score_threshold(cell["piece"]) if evidence is not None else threshold
+                       )
+                   ))]
             differences = []
             if relevant is not None:
                 differences = [f"{chr(97 + i % 9)}{9 - i // 9}:{want}->{actual[i]}"
@@ -132,26 +133,29 @@ def wait_for_matching_layout(expected, deadline, phase="Waiting for board", prio
                     return matched
             else:
                 evidence.reset()
-        elif (valid_aruco and observed_layout
-                and (validate_layout(observed_layout) if expected is None else observed_layout in expected)
-                and "unknown_cells" not in observation.get("reasons", ())):
+        elif valid_aruco and observed_layout:
+            layout_matches = ("unknown_cells" not in observation.get("reasons", ())
+                              and (validate_layout(observed_layout) if expected is None
+                                   else observed_layout in expected))
             scores_ok = (starting_scores_ok(observation) if starting_position else
                          "low_scores" not in observation.get("reasons", ()))
             same_board = observed_layout == previous_layout
-            consecutive = (consecutive + 1 if same_board else 1) if scores_ok else 0
+            consecutive = (consecutive + 1 if same_board else 1) if layout_matches and scores_ok else 0
             if consecutive == 3:
                 return observed_layout
-            if confirm_low_scores is not None:
-                review_streak = review_streak + 1 if same_board else 1
-                if review_streak >= 3 and not scores_ok:
+            if confirm_low_scores is not None and len(observation.get("cells", ())) == 90:
+                review_frames += 1
+                review_needed = review_needed or not scores_ok
+                if review_frames >= OPENING_REVIEW_FRAMES and review_needed:
                     if confirm_low_scores(observed_layout, observation["cells"]):
-                        return observed_layout
-                    consecutive = review_streak = 0
-                    deadline = max(deadline, time.monotonic() + 15)
+                        return next(iter(expected)) if expected and len(expected) == 1 else observed_layout
+                    consecutive = review_frames = 0
+                    review_needed = False
+                    deadline = time.monotonic() + retry_seconds
         else:
             consecutive = 0
-            review_streak = 0
-        last_frame = frame
+        if frame is not None:
+            last_frame = frame
         previous_layout = observed_layout
         time.sleep(1)
     source = last_observation.get("source") or "none"
@@ -223,7 +227,7 @@ def main():
 
         deadline = time.monotonic() + args.seconds
         print("Waiting for standard opening")
-        wait_for_layout(layout(START_FEN), deadline)
+        wait_for_layout(layout(START_FEN), deadline, starting_position=True)
         print("Opening confirmed; waiting for red", args.human_move)
         wait_for_layout(layout(human["fen"]), deadline)
         print("Detected red", args.human_move, "; selected", move)

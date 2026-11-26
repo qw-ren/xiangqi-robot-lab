@@ -22,7 +22,7 @@ Startup opens the I2C device but sends no servo movement. Point data is stored i
 ## Commands
 
 ```text
-magnet on
+magnet pickup
 magnet off
 torque off
 torque on
@@ -48,15 +48,14 @@ quit
 at both ends. With a legacy point file the route is:
 
 ```text
-c2a -> c2g -> magnet on -> c2a -> g5a -> g5g
+c2a -> magnet on -> c2g -> wait 1 second -> c2a -> g5a -> g5g
     -> magnet off -> g5a
 ```
 
-The suffix `a` means approach and `g` means grab/place. Every move waits for
-the requested duration plus a short settling delay. The magnet also gets a
-short settling delay after switching. `goto2` requires a nonzero move time so
-the program can estimate when each timed movement is complete; the default is
-1000 ms. If a movement fails or the macro is interrupted after pickup, it
+The suffix `a` means approach and `g` means grab/place. With both approach
+layers recorded, the arm passes through the region pose before the square
+pose on entry and retraces them on exit. If a movement fails or the macro is
+interrupted after pickup, it
 commands the magnet OFF before returning control. That can release the piece
 where it is, so inspect the arm and board before continuing.
 
@@ -64,14 +63,15 @@ Point names use lowercase board coordinates: columns `a` through `i`, rows
 `0` through `9`, plus `a`/`g`. Save the four example poses with:
 
 ```text
-teach approaches c2 g5
+teach approaches c2a c2g g5a g5g
 ```
 
 The existing manual commands remain available for calibration and
-troubleshooting. When `[MS]` is omitted, `set`, `jog`, `pose`, `goto` and
-every motion stage of `goto2` use 1000 ms. An explicit `[MS]` overrides it.
-The macro waits an additional 150 ms after each set of five writes and
-250 ms after each magnet switch. These are timed waits, not arrival feedback.
+troubleshooting. The default for `set`, `jog`, `pose` and `goto` is 1000 ms.
+For `goto2`, the duration of each segment uses the largest joint-angle change
+at a nominal limit of 70 degrees per second, with a 100 ms minimum. It reads
+the current joint angles before starting. An explicit `[MS]` sets a fixed
+time. Each segment adds 150 ms to settle. The magnet turns on at the source approach, holds through transport, and turns off at the placement pose. These are timed waits, not arrival feedback.
 Approach-to-approach moves follow joint motion; this tool does not plan
 Cartesian paths or intermediate clearance waypoints.
 
@@ -81,7 +81,7 @@ incorrect pose. `del NAME` is a shorter alias. The change is written to
 leaves the point file unchanged. Saving the same name again still replaces
 that point with the current five-servo readings.
 
-The electromagnet control uses BCM GPIO21 (physical pin 40). `magnet on` drives it HIGH; `magnet off` drives it LOW. It initializes LOW and is set LOW again on normal exit or Ctrl+C, leaving the pin configured as an output at LOW. The displayed state is the command sent by software, not electrical feedback from the magnet. This requires `RPi.GPIO` on the Raspberry Pi.
+The electromagnet driver uses BCM GPIO20 (physical pin 38) as active-high enable and BCM GPIO21 (physical pin 40) as direction. Enable starts LOW and is driven LOW before each direction change and at placement. Use `magnet pickup` and `magnet release` to hold the selected direction until `magnet off` or console exit. GPIO21 LOW selects pickup and HIGH selects manual reverse direction. This requires `RPi.GPIO` on the Raspberry Pi.
 
 `torque off` requests release of the holding torque of all bus servos so the arm can be repositioned by hand; `torque on` requests restoration. This is a board-wide bus-servo switch, not an individual-joint command, and a released arm or load may drop. A successful I2C write only means the request was sent to the extension board: the program cannot confirm each servo's torque state through this switch. It does not change electromagnet state. The program does not toggle servo torque automatically at startup or exit.
 
@@ -142,17 +142,27 @@ Support the arm before requesting `torque on`.
 | `approach_black_left` | a–e | 5–9 |
 | `approach_black_right` | f–i | 5–9 |
 
-Full-game play requires all 90 individual approaches and grab/place poses.
-Existing `<square>g` entries are reused. For manual transfers and the one-move
-trial, a saved individual approach takes priority over a shared region pose.
+Full-game play requires the four region poses and all 90 individual
+approaches and grab/place poses. Existing region poses and `<square>g` entries
+are reused. Manual transfers and the one-move trial also support older point
+files with only one approach layer.
 Use `coverage` to find missing individual poses.
 
 Record `park` with the arm and tool clear of the board, all four markers and the
 camera view. Check the route from the destination approach pose to `park`
 before using automatic play. With `park` present, `goto2` releases the piece,
-rises to the destination approach pose and then moves to `park`.
+rises through the destination's approach path and then moves to `park`.
 
 ## Integrated one-move trial
+
+### Game-over celebration
+
+Use `teach celebration` to record `celebration1` and `celebration2` in one
+session. Keep both poses and the path between them clear of the board.
+With torque enabled and the arm at `park`, use `celebrate` to preview the
+three A/B cycles. The magnet stays disabled and the arm returns to `park`.
+The full-game runner plays the celebration after checkmate or stalemate.
+It skips the celebration if either pose is missing.
 
 ### Capture storage for full-game trials
 

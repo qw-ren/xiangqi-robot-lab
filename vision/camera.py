@@ -321,9 +321,16 @@ class CameraManager:
             raise ValueError(f"Expected 800x600 camera capture, got {frame.shape[:2]}")
         command = ["v4l2-ctl", "-d", f"/dev/video{self.camera_index}"]
         modes = {"exposure_auto": 1, "focus_auto": 0, "white_balance_temperature_auto": 0}
-        controls = {"exposure_absolute": 180, "focus_absolute": 672,
+        frequency = os.getenv("CHRO_CAMERA_POWER_LINE", "50")
+        frequencies = {"off": 0, "50": 1, "60": 2}
+        if frequency not in frequencies:
+            raise ValueError("CHRO_CAMERA_POWER_LINE must be off, 50 or 60")
+        exposure = int(os.getenv("CHRO_CAMERA_EXPOSURE", "220"))
+        if not 1 <= exposure <= 5000:
+            raise ValueError("CHRO_CAMERA_EXPOSURE must be between 1 and 5000")
+        controls = {"exposure_absolute": exposure, "focus_absolute": 672,
                     "white_balance_temperature": 5000, "gain": 0, "brightness": 36,
-                    "contrast": 60, "power_line_frequency": 1}
+                    "contrast": 60, "power_line_frequency": frequencies[frequency]}
         for settings in (modes, controls):
             values = ",".join(f"{key}={value}" for key, value in settings.items())
             subprocess.run(command + ["-c", values], check=True, timeout=3)

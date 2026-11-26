@@ -76,7 +76,7 @@ def test_robot_verification_rejects_empty_destination_or_wrong_color():
             assert evidence.add(cells(seen + "." * 87)) is None
 
 
-def test_red_elephant_requires_higher_score_when_confirming_a_move():
+def test_move_requires_minimum_score_for_red_elephant():
     after = ".nB" + "." * 87
     evidence = BoardEvidence("Bn" + "." * 88, [after])
     frame = cells(after)
