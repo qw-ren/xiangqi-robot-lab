@@ -16,21 +16,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--input-width", type=int, choices=(280, 288), default=280)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--features-only", action="store_true")
     mode.add_argument("--fit-only", action="store_true", help="Use the features already extracted into --out")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    cache = args.out / "features.npz"
+    cache = args.out / ("features.npz" if args.input_width == 280 else "features-288x324.npz")
     if not args.fit_only:
-        extract_features(args.manifest, cache, parser)
+        extract_features(args.manifest, cache, parser, args.input_width)
     if args.features_only:
         return
     with np.load(cache) as data:
-        fit(args.out, **dict(data))
+        fit(args.out, **dict(data), input_width=args.input_width)
 
 
-def extract_features(manifest: Path, cache: Path, parser: argparse.ArgumentParser) -> None:
+def extract_features(manifest: Path, cache: Path, parser: argparse.ArgumentParser, input_width: int = 280) -> None:
     import cv2
     from core.runonnx.full_classifier import FULL_CLASSIFIER_ONNX
 
@@ -40,7 +41,8 @@ def extract_features(manifest: Path, cache: Path, parser: argparse.ArgumentParse
     for key in ("session", "frame_sha256"):
         if not train or not val or {r[key] for r in train} & {r[key] for r in val}:
             parser.error("Training and validation must have separate capture sessions and frames")
-    model = FULL_CLASSIFIER_ONNX(str(ROOT / "model/layout_recognition/nano_v3-0319.onnx"))
+    model = FULL_CLASSIFIER_ONNX(str(ROOT / "model/layout_recognition/nano_v3-0319.onnx"),
+                                 input_size=(input_width, input_width * 9 // 8))
     symbols = "".join(model.label_2_short.values())
 
     def collect(split: list) -> tuple:
@@ -60,7 +62,7 @@ def extract_features(manifest: Path, cache: Path, parser: argparse.ArgumentParse
 
 
 def fit(out: Path, train_features: np.ndarray, train_targets: np.ndarray,
-        val_features: np.ndarray, val_targets: np.ndarray, symbols: np.ndarray) -> None:
+        val_features: np.ndarray, val_targets: np.ndarray, symbols: np.ndarray, input_width: int = 280) -> None:
     import torch
     from torch import nn
     from torch.nn import functional as F
@@ -96,7 +98,8 @@ def fit(out: Path, train_features: np.ndarray, train_targets: np.ndarray,
             "confusions": Counter(f"{symbols[a]}->{symbols[b]}"
                                   for a, b in zip(val_targets[~correct], predictions[~correct])),
         }
-    np.savez(out / "nano_v3-0319.adapter.npz", weight=weight, bias=bias, symbols=symbols)
+    filename = "nano_v3-0319.adapter.npz" if input_width == 280 else "nano_v3-0319.288x324.adapter.npz"
+    np.savez(out / filename, weight=weight, bias=bias, symbols=symbols)
     output = json.dumps(report, indent=2)
     (out / "report.json").write_text(output + "\n", encoding="utf-8")
     print(output)

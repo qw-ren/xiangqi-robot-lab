@@ -2,12 +2,11 @@
 
 from collections import deque
 
-MIN_CELL_SCORE = 0.55
-MIN_RED_ELEPHANT_SCORE = 0.60
+MIN_CELL_SCORE = 0.60
 
 
 def cell_score_threshold(piece):
-    return MIN_RED_ELEPHANT_SCORE if piece == "B" else MIN_CELL_SCORE
+    return MIN_CELL_SCORE
 
 
 def piece_side(piece):

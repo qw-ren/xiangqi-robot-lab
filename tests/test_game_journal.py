@@ -5,7 +5,7 @@ import pytest
 from game_manager.game_journal import GameJournal
 from tools.vision import full_game_arm_trial as game
 from web_simulation.app import app
-from xq_utils.rules import START_FEN, checked_transition
+from xq_utils.rules import checked_transition
 
 
 def test_interrupted_black_capture_preserves_committed_position_and_resumes_without_motion(tmp_path):
@@ -32,22 +32,32 @@ def test_interrupted_black_capture_preserves_committed_position_and_resumes_with
     expected = checked_transition(fen, "a9a6")["fen"]
     assert check.call_args.args[0] == game.layout(expected)
     arm.transfer.assert_not_called()
+    arm.set_torque.assert_called_once_with(True)
     assert saved.state["fen"] == expected
     assert saved.state["pending"] is None
     assert saved.state["moves"][0]["capture"] == "P"
 
 
-def test_web_exposes_saved_confirmed_moves_and_pending_plan(tmp_path, monkeypatch):
+def test_classic_web_shows_confirmed_board_and_planned_move(tmp_path, monkeypatch):
     path = tmp_path / "game.json"
     journal = GameJournal(path)
-    journal.update(initial_fen=START_FEN, fen=START_FEN)
-    journal.confirm("a0a1")
-    journal.update(phase="moving", pending={"move": "h9g7", "slot": None})
+    journal.confirm("a0a1", starting_fen=game.START_FEN, captures=0)
+    journal.update(phase="selected", planned_move="h9g7", detail="等待定位棋盘")
     monkeypatch.setenv("CHRO_GAME_JOURNAL", str(path))
     with app.test_client() as client:
-        assert b"live_game.js" in client.get("/").data
-        response = client.get("/api/live-game")
-    assert response.headers["Cache-Control"] == "no-store"
-    assert response.json["moves"][0]["move"] == "a0a1"
-    assert response.json["pending"]["move"] == "h9g7"
-    assert response.json["fen"] == checked_transition(START_FEN, "a0a1")["fen"]
+        page = client.get("/")
+        assert page.status_code == 200
+        assert b"visual-board" in page.data
+        assert b"live_game.js" not in page.data
+        assert b"physical-game-status" in page.data
+        snapshot = client.get("/api/live-game").get_json()
+        assert snapshot["last_move"] == "a0a1"
+        assert snapshot["planned_move"] == "h9g7"
+        assert snapshot["board_state"]["0,8"] == "R"
+        assert "0,9" not in snapshot["board_state"]
+        assert snapshot["detail"] == "等待定位棋盘"
+        assert snapshot["moves"][0]["fen"] == snapshot["fen"]
+        assert snapshot["initial_fen"] == game.START_FEN
+        exported = client.get("/api/live-game?download=1")
+        assert "attachment" in exported.headers["Content-Disposition"]
+        assert exported.get_json()["moves"][0]["move"] == "a0a1"

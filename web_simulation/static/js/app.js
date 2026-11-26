@@ -32,9 +32,17 @@ class ChessSimulation {
         this.robotResumeTimer = null;
         this.robotPauseMs = 15000;
         this.lastDynamicEvent = '';
-        this.logPaused = false;
-        this.pausedLogCount = 0;
+        this.physicalGame = document.getElementById('physical-game-status') ? {} : null;
         this.init();
+        if (this.physicalGame) {
+            this.replayPly = null;
+            document.getElementById('physical-game-live').addEventListener('click', () => {
+                this.replayPly = null;
+                this.renderPhysicalHistory();
+                this.drawVisualBoard();
+            });
+            this.pollPhysicalGame();
+        }
     }
 
     async init() {
@@ -54,10 +62,6 @@ class ChessSimulation {
 
         bind('btn-capture', 'click', () => this.captureImage());
         bind('btn-recognize', 'click', () => this.toggleRecognition());
-        bind('btn-start-hardware-game', 'click', () => this.startHardwareGame());
-        bind('btn-start-simulation-game', 'click', () => this.startSimulationGame());
-        bind('btn-reset-game', 'click', () => this.resetGame());
-        bind('btn-toggle-log-pause', 'click', () => this.toggleLogPause());
         
         // 网络摄像头连接按钮
         bind('btn-connect-network', 'click', () => this.connectNetworkCamera());
@@ -80,23 +84,6 @@ class ChessSimulation {
             btn.style.opacity = '0.5';
             btn.style.cursor = 'not-allowed';
         }
-    }
-
-    setGameSettingControlsEnabled(enabled) {
-        ['ai-color', 'first-player'].forEach((id) => {
-            const el = document.getElementById(id);
-            if (el) el.disabled = !enabled;
-        });
-    }
-
-    getGameSettings() {
-        const aiColor = document.getElementById('ai-color')?.value || 'black';
-        const firstPlayer = document.getElementById('first-player')?.value || 'red';
-        return {
-            aiColor,
-            playerColor: aiColor === 'red' ? 'black' : 'red',
-            firstPlayer
-        };
     }
 
     colorName(color) {
@@ -488,10 +475,6 @@ class ChessSimulation {
                 if (data.first_player) this.firstPlayer = data.first_player;
 
                 this.boardState = data.board_state;
-                if (data.current_fen || data.fen) {
-                    document.getElementById('fen-display').value = data.current_fen || data.fen;
-                }
-                document.getElementById('piece-count').textContent = data.piece_count || 0;
                 this.drawVisualBoard();
                 this.drawBoard(data.board_state);
 
@@ -502,7 +485,6 @@ class ChessSimulation {
                     if (data.display_history) this.moveHistory = data.display_history;
                     else if (data.move_history) this.moveHistory = data.move_history;
                     this.updateMoveList();
-                    if (data.current_fen) document.getElementById('fen-display').value = data.current_fen;
                     
                     if (data.move.source === 'ai_confirmed') {
                         this.log('已确认机械臂完成AI落子，等待红方下一步', 'info');
@@ -770,8 +752,6 @@ class ChessSimulation {
             const data = await response.json();
             
             if (data.success) {
-                document.getElementById('fen-display').value = data.fen || '';
-                document.getElementById('piece-count').textContent = data.piece_count || 0;
                 if (data.preview_only) {
                     this.showVisionObservation(data);
                     return;
@@ -844,8 +824,6 @@ class ChessSimulation {
         this.boardState = board || {};
         this.drawVisualBoard();
         this.drawBoard(this.boardState);
-        document.getElementById('piece-count').textContent = Object.keys(this.boardState).length;
-        document.getElementById('fen-display').value = '';
     }
 
     // 开始游戏
@@ -863,15 +841,8 @@ class ChessSimulation {
         this.aiColor = 'black';
         this.playerColor = 'red';
         this.firstPlayer = 'red';
-        document.getElementById('ai-color').value = this.aiColor;
-        document.getElementById('first-player').value = this.firstPlayer;
 
         const isHardwareMode = mode === 'hardware';
-        const startButton = document.getElementById(
-            isHardwareMode ? 'btn-start-hardware-game' : 'btn-start-simulation-game'
-        );
-        startButton.disabled = true;
-        startButton.textContent = isHardwareMode ? '机械臂归零中...' : '启动模拟中...';
 
         if (isHardwareMode) {
             this.log('正在发送 Homing 指令：-17.1848,-55.6304,0,0,99', 'info');
@@ -909,15 +880,10 @@ class ChessSimulation {
                 this.lastAiBoardApplied = null;
                 this.isPlayerTurn = (data.current_turn || this.firstPlayer) === this.playerColor;
                 this.updateMoveList();
-                if (data.current_fen || data.fen) {
-                    document.getElementById('fen-display').value = data.current_fen || data.fen;
-                }
                 this.updateGameStatus();
                 
-                // 游戏中仍允许停止/继续摄像头走子识别；只锁定对局设置。
+                // 游戏中仍允许停止或继续摄像头走子识别。
                 this.setRecognizeButtonEnabled(true);
-                this.setGameSettingControlsEnabled(false);
-                this.log('对局设置已锁定，开始监听红方走子', 'info');
                 
                 // 每局固定从标准初始棋盘开始，摄像头只负责识别之后的走子变化。
                 if (data.board_state) {
@@ -926,7 +892,6 @@ class ChessSimulation {
                 } else {
                     this.initStandardBoard();
                 }
-                document.getElementById('piece-count').textContent = Object.keys(this.boardState).length;
                 this.drawVisualBoard();
                 
                 this.log('✅ 棋盘状态:', 'info');
@@ -946,9 +911,6 @@ class ChessSimulation {
         } catch (error) {
             this.isGameRunning = false;
             this.log(`开始游戏错误: ${error.message}`, 'error');
-        } finally {
-            startButton.disabled = false;
-            startButton.textContent = isHardwareMode ? '正式使用（连接下位机）' : '模拟测试（无下位机）';
         }
     }
 
@@ -971,8 +933,6 @@ class ChessSimulation {
                 this.stopDynamicRecognition();
                 this.setRecognitionMode(false);
                 document.getElementById('game-status').textContent = '等待开始';
-                document.getElementById('fen-display').value = '';
-                document.getElementById('piece-count').textContent = '0';
                 this.moveHistory = [];
                 this.lastAiBestMoveHandled = null;
                 this.lastAiBoardApplied = null;
@@ -980,13 +940,10 @@ class ChessSimulation {
                 this.aiColor = 'black';
                 this.playerColor = 'red';
                 this.firstPlayer = 'red';
-                document.getElementById('ai-color').value = this.aiColor;
-                document.getElementById('first-player').value = this.firstPlayer;
                 this.updateMoveList();
                 
                 // 重新启用识别按钮
                 this.setRecognizeButtonEnabled(true);
-                this.setGameSettingControlsEnabled(true);
                 this.log('✅ 已启用识别按钮', 'info');
             } else {
                 this.log(`重置失败: ${data.error}`, 'error');
@@ -1027,13 +984,9 @@ class ChessSimulation {
         this.moveHistory = data.display_history || data.move_history || this.moveHistory;
         this.updateMoveList();
 
-        if (data.current_fen) {
-            document.getElementById('fen-display').value = data.current_fen;
-        }
 
         if (data.board_state) {
             this.boardState = data.board_state;
-            document.getElementById('piece-count').textContent = data.piece_count || Object.keys(this.boardState).length;
             this.drawVisualBoard();
             this.drawBoard(this.boardState);
         } else {
@@ -1081,10 +1034,6 @@ class ChessSimulation {
                 if (!data.success) return;
                 
                 // 更新分析面板
-                if (data.analysis) {
-                    this.showAnalysis(data.analysis);
-                }
-
                 const bestMove = data.analysis?.best_move;
                 if (bestMove) {
                     this.predisplayAIMoveFromStatus(data, bestMove);
@@ -1291,6 +1240,7 @@ class ChessSimulation {
 
     // 更新走法列表
     updateMoveList() {
+        if (this.physicalGame) return;
         const moveList = document.getElementById('move-list');
         moveList.innerHTML = '';
         
@@ -1302,27 +1252,6 @@ class ChessSimulation {
         });
         
         moveList.scrollTop = moveList.scrollHeight;
-    }
-
-    // 显示AI分析
-    showAnalysis(analysis) {
-        const analysisDiv = document.getElementById('ai-analysis');
-        let html = '<h4>AI分析结果</h4>';
-        
-        if (analysis.best_move) {
-            html += `<p><strong>最佳走法:</strong> ${analysis.best_move}</p>`;
-        }
-        if (analysis.score !== null && analysis.score !== undefined) {
-            html += `<p><strong>评估分数:</strong> ${analysis.score}</p>`;
-        }
-        if (analysis.depth) {
-            html += `<p><strong>搜索深度:</strong> ${analysis.depth}</p>`;
-        }
-        if (analysis.pv) {
-            html += `<p><strong>PV线:</strong> ${analysis.pv.substring(0, 50)}...</p>`;
-        }
-        
-        analysisDiv.innerHTML = html;
     }
 
     // 绘制棋盘
@@ -1401,6 +1330,106 @@ class ChessSimulation {
         ctx.stroke();
     }
 
+    renderPhysicalHistory() {
+        const moves = this.physicalGame.moves || [];
+        const list = document.getElementById('move-list');
+        const live = document.getElementById('physical-game-live');
+        const caption = document.getElementById('physical-game-replay');
+        live.hidden = caption.hidden = this.replayPly === null;
+        caption.textContent = this.replayPly === -1 ? '回放：起盘局面' : `回放：第 ${this.replayPly + 1} 步`;
+        const signature = JSON.stringify([this.physicalGame.initial_fen, moves, this.replayPly]);
+        if (signature === this.historySignature) return;
+        this.historySignature = signature;
+        list.replaceChildren();
+        const names = {r:'车', n:'马', b:'象', a:'士', k:'将', c:'炮', p:'卒',
+            R:'车', N:'马', B:'相', A:'仕', K:'帅', C:'炮', P:'兵'};
+        const button = (label, index) => {
+            const el = document.createElement('button');
+            el.type = 'button';
+            el.className = 'btn btn-secondary btn-small';
+            el.textContent = label;
+            el.setAttribute('aria-pressed', String(this.replayPly === index));
+            el.addEventListener('click', () => {
+                this.replayPly = index;
+                this.renderPhysicalHistory();
+                this.drawVisualBoard();
+                list.querySelector(`[aria-pressed="true"]`)?.focus({preventScroll: true});
+            });
+            return el;
+        };
+        if (this.physicalGame.initial_fen) list.append(button('起盘局面', -1));
+        let round, roundNumber;
+        moves.forEach((entry, index) => {
+            const black = entry.side === 'b';
+            const number = Number(entry.fen.split(' ')[5]) - Number(black);
+            if (number !== roundNumber) {
+                roundNumber = number;
+                round = document.createElement('div');
+                round.className = 'move-item';
+                round.append(document.createTextNode(`第 ${number} 回合 `));
+                list.append(round);
+            }
+            const captured = entry.capture ? `，吃${names[entry.capture]}` : '';
+            const move = entry.move;
+            round.append(button(`${black ? '黑' : '红'}${names[entry.piece]}从 ${move.slice(0,2)} 到 ${move.slice(2)}${captured}`, index));
+        });
+        if (this.replayPly === null) list.scrollTop = list.scrollHeight;
+    }
+
+    physicalBoardForDisplay() {
+        const live = this.physicalGame;
+        if (!live || this.replayPly === null) return live;
+        const entry = live.moves?.[this.replayPly];
+        const fen = this.replayPly === -1 ? live.initial_fen : entry?.fen;
+        const board_state = {};
+        (fen || '').split(' ')[0].split('/').forEach((rank, row) => {
+            let col = 0;
+            for (const piece of rank) {
+                if (/[1-9]/.test(piece)) col += Number(piece);
+                else board_state[`${col++},${row}`] = piece;
+            }
+        });
+        return {fen, board_state, last_move: entry?.move};
+    }
+
+    async pollPhysicalGame() {
+        const title = document.getElementById('physical-game-status');
+        const detail = document.getElementById('physical-game-detail');
+        const phases = {
+            setup: '等待确认开局', review: '等待确认低分棋子', red: '等红方走棋',
+            thinking: '黑方思考', selected: '黑方已选招', moving: '机械臂搬运',
+            clearing: '正在复核吃子格', verifying: '正在复核',
+            stopped: '对局已停止', finished: '对局结束',
+        };
+        try {
+            const response = await fetch('/api/live-game', {cache: 'no-store'});
+            if (!response.ok) throw new Error(response.status);
+            this.physicalGame = await response.json();
+            title.textContent = phases[this.physicalGame.phase] || phases.setup;
+            detail.textContent = this.physicalGame.detail || '';
+            detail.hidden = !detail.textContent;
+            const checks = this.physicalGame.preflight;
+            const preflight = document.getElementById('physical-game-preflight');
+            preflight.textContent = checks?.points
+                ? `自检 · 摄像头 ${checks.camera} · 引擎 ${checks.engine} · 示教点 ${checks.points} · 起盘 ${checks.opening}` : '';
+            const result = this.physicalGame.result;
+            const outcome = document.getElementById('physical-game-result');
+            outcome.hidden = !result;
+            if (result) {
+                const moves = this.physicalGame.moves;
+                const count = moves.length;
+                const rounds = new Set(moves.map(move => Number(move.fen.split(' ')[5]) - Number(move.side === 'b'))).size;
+                outcome.textContent = `${result.winner === 'red' ? '红方' : '黑方'}胜 · ${result.reason === 'checkmate' ? '将死' : '困毙'} · ${rounds} 回合（${count} 步）`;
+            }
+            this.renderPhysicalHistory();
+            this.drawVisualBoard();
+        } catch (_) {
+            title.textContent = '对局状态连接中断';
+        } finally {
+            setTimeout(() => this.pollPhysicalGame(), 1000);
+        }
+    }
+
     // 绘制可视化棋盘
     drawVisualBoard() {
         const canvas = document.getElementById('visual-board');
@@ -1467,7 +1496,7 @@ class ChessSimulation {
         
         // 楚河汉界
         ctx.fillStyle = '#8b5a2b';
-        ctx.font = 'bold 16px Arial';
+        ctx.font = 'bold 16px KaiTi, SimSun, serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText('楚 河', offsetX + 2 * cellWidth, offsetY + 4.5 * cellHeight);
@@ -1482,7 +1511,22 @@ class ChessSimulation {
         // 绘制棋子
         const pieceRadius = Math.min(cellWidth, cellHeight) * 0.35;
         
-        Object.entries(this.boardState).forEach(([posKey, pieceChar]) => {
+        const live = this.physicalBoardForDisplay();
+        const boardState = live ? live.board_state || {} : this.boardState;
+        const movePoints = move => {
+            if (!/^[a-i][0-9][a-i][0-9]$/.test(move || '')) return [];
+            return [0, 2].map(i => [
+                offsetX + (move.charCodeAt(i) - 97) * cellWidth,
+                offsetY + (9 - Number(move[i + 1])) * cellHeight,
+            ]);
+        };
+        if (live) {
+            ctx.fillStyle = 'rgba(180, 92, 16, 0.30)';
+            for (const [x, y] of movePoints(live.last_move)) {
+                ctx.fillRect(x - 19, y - 19, 38, 38);
+            }
+        }
+        Object.entries(boardState).forEach(([posKey, pieceChar]) => {
             const [col, row] = posKey.split(',').map(Number);
             const x = offsetX + col * cellWidth;
             const y = offsetY + row * cellHeight;
@@ -1501,7 +1545,7 @@ class ChessSimulation {
             ctx.stroke();
             
             // 如果是选中状态，添加高亮
-            if (this.selectedSquare && this.selectedSquare.col === col && this.selectedSquare.row === row) {
+            if (!live && this.selectedSquare && this.selectedSquare.col === col && this.selectedSquare.row === row) {
                 ctx.beginPath();
                 ctx.arc(x, y, pieceRadius + 4, 0, Math.PI * 2);
                 ctx.strokeStyle = '#3b82f6';
@@ -1511,15 +1555,30 @@ class ChessSimulation {
             
             // 绘制棋子文字
             ctx.fillStyle = isRed ? '#dc2626' : '#1f2937';
-            ctx.font = `bold ${pieceRadius * 0.9}px "Microsoft YaHei", Arial`;
+            ctx.font = `bold ${pieceRadius * 0.9}px "Kaiti SC", STKaiti, KaiTi, SimSun, serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText(pieceName, x, y);
         });
+        const [from, to] = movePoints(live?.planned_move);
+        if (from && to) {
+            const angle = Math.atan2(to[1] - from[1], to[0] - from[0]);
+            ctx.strokeStyle = '#147475';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(...from);
+            ctx.lineTo(...to);
+            for (const offset of [-0.55, 0.55]) {
+                ctx.moveTo(...to);
+                ctx.lineTo(to[0] - 16 * Math.cos(angle + offset), to[1] - 16 * Math.sin(angle + offset));
+            }
+            ctx.stroke();
+        }
     }
 
     // 处理棋盘点击
     handleBoardClick(event) {
+        if (this.physicalGame) return;
         if (!this.isPlayerTurn) {
             this.log('当前是AI回合，请等待', 'warning');
             return;
@@ -1602,9 +1661,7 @@ class ChessSimulation {
                 this.moveHistory = data.display_history || [...this.moveHistory, `红方 ${uciMove}`];
                 this.updateMoveList();
                 
-                // 更新FEN显示
                 if (data.fen) {
-                    document.getElementById('fen-display').value = data.fen;
                     this.log(`新FEN: ${data.fen}`, 'info');
                 }
                 
@@ -1696,8 +1753,6 @@ class ChessSimulation {
                     this.aiColor = data.state.ai_color || 'black';
                     this.playerColor = data.state.player_color || 'red';
                     this.isPlayerTurn = this.currentTurnFromFen(data.state.current_fen) === this.playerColor;
-                    document.getElementById('fen-display').value = data.state.current_fen;
-                    document.getElementById('piece-count').textContent = Object.keys(this.boardState).length;
                     this.updateMoveList();
                     this.drawVisualBoard();
                     this.updateGameStatus();
@@ -1714,7 +1769,7 @@ class ChessSimulation {
         if (!this.isGameRunning || !fen || this.aiPollingTimer) return;
         
         const turnColor = this.currentTurnFromFen(fen);
-        const aiColor = this.aiColor || document.getElementById('ai-color').value;
+        const aiColor = this.aiColor;
         
         // 更新 UI 上的回合显示
         this.updateGameStatusFromTurn(turnColor);
@@ -1725,42 +1780,8 @@ class ChessSimulation {
         }
     }
 
-    // 日志输出
-    toggleLogPause() {
-        this.logPaused = !this.logPaused;
-        const btn = document.getElementById('btn-toggle-log-pause');
-        if (btn) {
-            btn.textContent = this.logPaused ? '恢复日志' : '暂停日志';
-            btn.classList.toggle('btn-warning', this.logPaused);
-            btn.classList.toggle('btn-secondary', !this.logPaused);
-        }
-
-        if (!this.logPaused) {
-            const skipped = this.pausedLogCount;
-            this.pausedLogCount = 0;
-            if (skipped > 0) {
-                this.log(`日志已恢复，暂停期间省略 ${skipped} 条页面日志`, 'warning');
-            }
-        }
-    }
-
     log(message, type = 'info') {
         console.log(`[${type.toUpperCase()}] ${message}`);
-
-        if (this.logPaused) {
-            this.pausedLogCount += 1;
-            return;
-        }
-
-        const logOutput = document.getElementById('log-output');
-        const time = new Date().toLocaleTimeString('zh-CN');
-
-        const entry = document.createElement('div');
-        entry.className = `log-entry log-${type}`;
-        entry.innerHTML = `<span class="log-time">[${time}]</span>${message}`;
-
-        logOutput.appendChild(entry);
-        logOutput.scrollTop = logOutput.scrollHeight;
     }
 }
 

@@ -3,18 +3,76 @@ from unittest.mock import Mock, patch
 import pytest
 
 from tools.vision import full_game_arm_trial as game
-from tools.vision.one_move_arm_trial import starting_scores_ok
+from tools.vision.one_move_arm_trial import starting_scores_ok, wait_for_layout
 
 
 @pytest.mark.parametrize("piece,score,accepted", [
     (".", 0.79, True),
-    (".", 0.74, False),
-    ("R", 0.79, False),
+    (".", 0.0, True),
+    ("R", 0.75, True),
+    ("R", 0.74, False),
     ("x", 0.95, False),
 ])
-def test_starting_layout_only_relaxes_moderately_low_empty_cells(piece, score, accepted):
+def test_starting_layout_ignores_empty_cell_scores(piece, score, accepted):
     cells = [{"piece": ".", "score": 0.99}] * 89 + [{"piece": piece, "score": score}]
     assert starting_scores_ok({"reasons": ["low_scores"], "cells": cells}) is accepted
+
+
+def test_opening_accepts_three_matching_frames_and_omits_empty_cells_from_low_score_report():
+    expected = game.layout(game.START_FEN)
+    cells = [dict(row=row, col=col, piece=piece, score=0.01 if piece == "." else 0.75)
+             for row, rank in enumerate(expected.splitlines()) for col, piece in enumerate(rank)]
+    frames = [dict(observation=dict(frame_id=i, source="aruco", layout=expected,
+                                   cells=cells, reasons=["low_scores"])) for i in range(1, 4)]
+    report = Mock()
+    with patch("urllib.request.urlopen"), patch("json.load", side_effect=frames), patch("time.sleep"):
+        actual = wait_for_layout(expected, game.time.monotonic() + 5, starting_position=True, report=report)
+    assert actual == expected
+    report.assert_called_once_with(1, "aruco", [], [])
+
+
+def test_opening_requests_confirmation_on_frame_12_even_when_recognition_changes():
+    expected = game.layout(game.START_FEN)
+
+    def frame(number):
+        seen = expected if number % 2 else "x" + expected[1:]
+        cells = [dict(row=row, col=col, piece=piece, score=0.7 if (row, col) == (0, 0) else 0.99)
+                 for row, rank in enumerate(seen.splitlines()) for col, piece in enumerate(rank)]
+        reasons = ["low_scores"] if number % 2 else ["unknown_cells"]
+        return dict(observation=dict(frame_id=number, source="aruco", layout=seen, cells=cells, reasons=reasons))
+
+    frames = [response for number in range(1, 25) for response in (frame(number), frame(number))]
+    with patch("urllib.request.urlopen"), patch("json.load", side_effect=frames) as receive, patch("time.sleep"):
+        confirmations = []
+
+        def confirm(observed, cells):
+            confirmations.append(receive.call_count)
+            assert observed[0] == cells[0]["piece"] == "x"
+            return len(confirmations) == 2
+
+        assert wait_for_layout(expected, game.time.monotonic() + 5, starting_position=True,
+                               confirm_low_scores=confirm) == expected
+    assert confirmations == [23, 47]
+
+
+def test_manual_opening_confirmation_lists_unknown_square_and_checks_expected_board(capsys):
+    expected = game.layout(game.START_FEN)
+    cells = [dict(row=0, col=0, piece="x", score=0.9)]
+    journal = Mock()
+    with patch("builtins.input", return_value="") as confirm:
+        assert game.confirm_starting_position("x" + expected[1:], cells, expected=expected, journal=journal)
+    assert "实物棋盘与预期局面" in confirm.call_args.args[0]
+    assert "a9 应为黑车，识别为未知" in capsys.readouterr().out
+    assert journal.status.call_args.args[0] == "review"
+
+
+def test_unknown_endgame_requests_rescan_instead_of_accepting_invalid_layout():
+    cells = [dict(row=0, col=0, piece="x", score=0.9)]
+    journal = Mock()
+    with patch("builtins.input", return_value="") as confirm:
+        assert not game.confirm_starting_position("x", cells, validate_layout=lambda _: False, journal=journal)
+    assert "重扫" in confirm.call_args.args[0]
+    journal.status.assert_called_with("setup")
 
 
 @pytest.mark.parametrize(("position", "outcome"), [

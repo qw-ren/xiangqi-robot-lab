@@ -21,7 +21,7 @@ $adapterOut = 'artifacts/training/gpu-onnx-adapter-v2'
 & $trainPy tools/vision/train_classifier_adapter.py --manifest $manifest --out $adapterOut --fit-only
 ```
 
-用 `report.json` 对照独立验证集上的单格正确数、整盘正确数和错分类型。验证通过后，把输出的 `nano_v3-0319.adapter.npz` 放到 `model/layout_recognition/`，重启识别程序即可加载。要回放原模型，可以在启动进程前设置 `$env:CHRO_DISABLE_CLASSIFIER_ADAPTER = '1'`，恢复时用 `Remove-Item Env:CHRO_DISABLE_CLASSIFIER_ADAPTER` 后重启。
+用 `report.json` 对照独立验证集上的单格正确数、整盘正确数和错分类型。验证通过后，如需在 280×315 输入下启用校正，把输出的 `nano_v3-0319.adapter.npz` 放到 `model/layout_recognition/`，在启动进程前设置 `$env:CHRO_DISABLE_CLASSIFIER_ADAPTER = '0'` 后重启。默认使用原模型输出。验证后可用 `Remove-Item Env:CHRO_DISABLE_CLASSIFIER_ADAPTER` 恢复默认设置。
 
 ## 追加一组数据
 

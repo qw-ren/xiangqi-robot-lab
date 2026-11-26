@@ -17,8 +17,8 @@ module) so test patches on ``web_app.<name>`` take effect.
 
 import json
 import logging
-import os
 from pathlib import Path
+import os
 import sys
 
 # Make the project root importable when launched as `python web_simulation/app.py`.
@@ -32,7 +32,7 @@ if __name__ == "__main__":
     sys.modules.setdefault("web_simulation.app", sys.modules["__main__"])
 
 import config
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 
 from vision import BoardRecognizer
@@ -123,22 +123,41 @@ robot_tcp_client_lock = __import__("threading").RLock()
 @app.route("/")
 def index():
     """Serve the main web UI."""
-    if os.getenv("CHRO_GAME_JOURNAL"):
-        return render_template("live_game.html")
-    return render_template("index.html")
+    return render_template("index.html", physical_game=bool(os.getenv("CHRO_GAME_JOURNAL")))
 
 
-@app.get("/api/live-game")
+@app.route("/api/live-game", methods=["GET"])
 def live_game():
+    from xq_utils.rules import board_from_fen
+
     path = os.getenv("CHRO_GAME_JOURNAL")
+    state = {}
     if path:
         try:
             state = json.loads(Path(path).read_text(encoding="utf-8"))
         except FileNotFoundError:
             pass
-        else:
-            return jsonify(state), 200, {"Cache-Control": "no-store"}
-    return jsonify(phase="setup", detail="", moves=[]), 200, {"Cache-Control": "no-store"}
+    if request.args.get("download") == "1":
+        if not state.get("initial_fen"):
+            return jsonify(error="棋谱尚未建立"), 404
+        return jsonify(state), 200, {
+            "Content-Disposition": 'attachment; filename="xiangqi-game.json"',
+            "Cache-Control": "no-store",
+        }
+    fen = state.get("fen")
+    moves = state.get("moves", [])
+    phase = state.get("phase", "setup")
+    detail = state.get("detail", "")
+    planned = (state.get("pending") or {}).get("move")
+    if phase == "selected":
+        planned = state.get("planned_move")
+    return jsonify(
+        fen=fen, board_state=board_from_fen(fen) if fen else {},
+        last_move=moves[-1]["move"] if moves else None,
+        planned_move=planned, phase=phase, detail=detail, moves=moves,
+        initial_fen=state.get("initial_fen"), preflight=state.get("preflight", {}),
+        result=state.get("result"),
+    ), 200, {"Cache-Control": "no-store"}
 
 
 # --------------------------------------------------------------------------- #

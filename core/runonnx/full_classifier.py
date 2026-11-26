@@ -74,7 +74,7 @@ class FULL_CLASSIFIER_ONNX(BaseONNX):
 
         self.crop_size = crop_size
         self.adapter = None
-        if (input_size, crop_size) == ((280, 315), (400, 450)) and os.getenv("CHRO_DISABLE_CLASSIFIER_ADAPTER") != "1":
+        if (input_size, crop_size) == ((280, 315), (400, 450)) and os.getenv("CHRO_DISABLE_CLASSIFIER_ADAPTER") == "0":
             self.adapter = self._load_adapter(Path(model_path).with_suffix(".adapter.npz"))
 
     @staticmethod
